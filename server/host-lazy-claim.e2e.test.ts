@@ -113,7 +113,7 @@ describe("lazy host claim and pin on use (issue #1650)", () => {
   }
   // Auto may land on the person's own desktop only on macOS and Windows.
   const itAutoHost = process.platform === "linux" ? it.skip : it;
-  // Full access, the default, is the person's grant to use this computer without asking; every other level asks.
+  // Full access is the person's grant to use this computer without asking; every other level asks.
   const ASKS = "ask";
 
   beforeAll(async () => {
@@ -318,10 +318,10 @@ describe("lazy host claim and pin on use (issue #1650)", () => {
     await idle(waiter.bot.id, waiter.threadId);
   }, 60_000);
 
-  itAutoHost("never asks at Full access, the default: the first screen call goes straight through", async () => {
+  itAutoHost("never asks at explicit Full access: the first screen call goes straight through", async () => {
     await start();
-    const { bot } = await apiOk("POST", "/api/bots", { name: "Host Full Access Bot" });
-    expect(bot.approvalMode ?? "full").toBe("full");
+    const { bot } = await apiOk("POST", "/api/bots", { name: "Host Full Access Bot", settings: { approvalMode: "full" } });
+    expect(bot.approvalMode).toBe("full");
     const { task } = await apiOk("POST", `/api/bots/${bot.id}/tasks`, {});
     resetTurn();
     await apiOk("POST", `/api/bots/${bot.id}/messages`, { text: "Look at my calendar slowly.", threadId: task.threadId });

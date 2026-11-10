@@ -83,7 +83,7 @@ function approvalMenu(choice: ApprovalChoice, simple: boolean) {
     current,
     note: localOnly ? t("approvalMode.customLocalOnlyDot") : choice.busy ? t("approvalMode.whileWorking") : undefined,
     items: [
-      ...approvalModeOptionsFor(choice.driverKind, trusted).map((option): SidebarMenuItem => {
+      ...approvalModeOptionsFor(choice.driverKind, trusted, choice.approvalCeiling).map((option): SidebarMenuItem => {
         const Icon = option.Icon;
         return {
           key: `approval:${option.mode}`,

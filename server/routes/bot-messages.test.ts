@@ -41,7 +41,8 @@ class DirectSendRefused extends Error {
 
 type AcceptInput = Parameters<BotMessageRouteDeps["acceptDirectSend"]>[0];
 
-async function fixture(over: Partial<Record<keyof BotMessageRouteDeps, unknown>> = {}, desktopManaged = true) {
+async function fixture(over: Partial<Record<keyof BotMessageRouteDeps, unknown>> = {}, desktopManaged = true,
+  auth: RequestAuth = { kind: "loopback", scopes: ["admin"] }) {
   const store = new Store(() => sonnet);
   const bot = store.createBot({ name: "Scout" });
   const threadId = bot.threadId;
@@ -130,7 +131,6 @@ async function fixture(over: Partial<Record<keyof BotMessageRouteDeps, unknown>>
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     try {
-      const auth = { kind: "loopback", scopes: ["admin"] } as RequestAuth;
       const handled = await dispatchRoutes(routes, { req, res, url, path: url.pathname, method: req.method ?? "GET", auth, json, readBody });
       if (!handled) json(res, 404, { from: "inline routes" });
     } catch (error) {
@@ -482,6 +482,26 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     expect(sent().map((message) => [message.text, message.replyToId])).toEqual([["Hello", undefined], ["Hold off until Monday", widgetId]]);
     expect(state.accepted.map((input) => input.replyTo?.id)).toEqual([undefined, widgetId]);
   });
+});
+
+it("only allows service-trust guarded sends into clean Ask conversations", async () => {
+  let hasRememberedCommands = false;
+  const { store, bot, threadId, post, state } = await fixture({ hasRememberedCommands: () => hasRememberedCommands }, false,
+    { kind: "loopback", trust: "service", scopes: ["client"] });
+  store.patchTask(bot.id, threadId, { approvalMode: "full" });
+  const input = { threadId, sendId: SEND, text: "Check the report", expectedActiveLeafId: store.activeLeaf(threadId) };
+  expect((await post({ ...input, expectedApprovalMode: "full" }, "/guarded")).status).toBe(403);
+  expect((await post({ ...input, expectedApprovalMode: "ask" }, "/guarded")).status).toBe(409);
+  store.patchTask(bot.id, threadId, { approvalMode: "ask", alwaysAllow: ["fixture-remembered-grant"] });
+  expect((await post({ ...input, expectedApprovalMode: "ask" }, "/guarded")).status).toBe(409);
+  store.patchTask(bot.id, threadId, { alwaysAllow: [] });
+  hasRememberedCommands = true;
+  expect((await post({ ...input, expectedApprovalMode: "ask" }, "/guarded")).status).toBe(409);
+  expect(state.started).toEqual([]);
+
+  hasRememberedCommands = false;
+  expect((await post({ ...input, expectedApprovalMode: "ask" }, "/guarded")).status).toBe(202);
+  expect(state.started).toHaveLength(1);
 });
 
 describe("POST /api/bots/:id/messages/guarded with a reaction another app relayed", () => {

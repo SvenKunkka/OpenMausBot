@@ -60,6 +60,12 @@ describe("approval mode selector", () => {
     expect(approvalModeOptionsFor(kind, false).map((option) => option.mode)).toEqual(["ask", "auto", "full"]);
   });
 
+  it("only offers modes that fit the bot’s ceiling", () => {
+    expect(approvalModeOptionsFor("codex", true, "ask").map(({ mode }) => mode)).toEqual(["ask"]);
+    expect(approvalModeOptionsFor("codex", true, "auto").map(({ mode }) => mode)).toEqual(["ask", "auto"]);
+    expect(approvalModeOptionsFor("claudeAgent", true, "auto").map(({ mode }) => mode)).toEqual(["ask", "edits", "auto"]);
+  });
+
   it("offers Grok its native acceptEdits as Auto-accept edits", () => {
     expect(approvalModeOptionsFor("grokAgent").map((option) => option.mode)).toEqual(["ask", "edits", "auto", "full"]);
     expect(approvalModeOptionsFor("grokAgent", false).map((option) => option.mode)).toEqual(["ask", "edits", "auto", "full"]);
@@ -90,7 +96,7 @@ describe("approval mode selector", () => {
     expect(render("full", false, false)).toContain('aria-label="Auto (full access) for Antigravity"');
   });
 
-  it("explains Auto fallbacks and offers Full, the default level, on every provider", () => {
+  it("explains Auto fallbacks and offers Full on every provider", () => {
     expect(approvalModeOptionsFor("grokAgent").find((option) => option.mode === "auto")?.description).toContain("automatic review to approve routine actions");
     expect(approvalModeOptionsFor("customAgent").find((option) => option.mode === "auto")?.description).toContain("behaves like Ask");
     expect(approvalModeOptionsFor("customAgent").map((option) => option.mode)).toEqual(["ask", "auto", "full"]);

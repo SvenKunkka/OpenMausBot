@@ -10,7 +10,8 @@ description is in [self-hosting](../self-hosting.md#loopback-trust-owner-or-serv
 - **Loopback trust.** At start-up the server logs `local requests: owner
   trust (…)` or `local requests: service trust (…)`. A hosted workspace (any
   `OMB_ADMIN_*` setting; shared-workspace Full access only works there)
-  defaults to `service`; a self-hosted server keeps `owner`;
+  defaults to `service`, as does the bundled standalone server. An unbundled
+  source server defaults to `owner` for development and fixtures;
   `OMB_LOOPBACK_TRUST=owner|service` overrides (anything else means
   `service`); the desktop app always keeps `owner` behind its per-launch
   capability. Under `service` a session-less loopback request may use only
@@ -18,10 +19,9 @@ description is in [self-hosting](../self-hosting.md#loopback-trust-owner-or-serv
   brand, the bot list, thread messages, attachments, new threads, the guarded
   send, the exact request fence and its stop, withdrawing a queued line,
   `POST /api/threads/:id/respond` (decline only), and the bots' capability
-  routes under `/api/internal/*`. Everything else answers 403. That is
-  exactly the set the cloud Slack worker calls (checked against the cloud
-  repository's worker source, every released version), so the deployed
-  worker needs no change.
+  routes under `/api/internal/*`. Everything else answers 403. New service
+  threads start in Ask. The guarded send accepts only Ask for a service
+  caller, and the service health response omits the Full-access flags.
 - **The CLI under service trust.** `openmausbot serve` hands the server it
   starts a per-launch secret over the server's stdin; that secret opens
   `/api/auth/pairing` for that CLI alone, so `serve` still prints the first
@@ -74,8 +74,9 @@ pnpm exec vitest run server/request-auth.test.ts server/decision-log.test.ts \
 - `server/hosted-access.test.ts` ("treats a session-less local caller as a
   service by default") boots a portal-membership workspace with shared Full
   access and no override: the start-up log line, the worker's whole path over
-  loopback (health, bot list, a Full-access thread, a guarded send, its
-  request fence), 403 for `PUT /api/config`, `POST /api/webhooks`, session
+  loopback (health, bot list, an Ask thread, a guarded send, its
+  request fence), 403 for a Full-access thread or send, `PUT /api/config`,
+  `POST /api/webhooks`, session
   list and revocation, bot creation and loosening, and an unguarded send,
   with nothing changed afterwards; then an admin portal session saves the
   retention window and reads `membership`. The other cases in that file keep

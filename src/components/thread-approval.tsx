@@ -2,7 +2,7 @@ import { useState, type ComponentProps, type ReactNode } from "react";
 
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import { useStore, type Bot } from "@/state/store";
-import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
+import { approvalModeAllowed, approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
 import type { ApprovalModeSelector } from "./ApprovalModeSelector";
 import { CommandAllowlistDialog } from "./CommandAllowlistDialog";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
@@ -22,7 +22,7 @@ export function useThreadApproval(bot: Bot | undefined): { choice: ApprovalChoic
   const engine = bot ? state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId) : undefined;
   const trusted = Boolean(!remoteClient && window.ogb?.approvals && capabilities.host.packaged);
   const onSelect = (mode: ApprovalMode) => {
-    if (!bot || mode === approvalModeFor(bot)) return;
+    if (!bot || mode === approvalModeFor(bot) || !approvalModeAllowed(mode, bot.approvalCeiling)) return;
     if (mode === "custom" && !trusted) return;
     if (mode === "auto" && bot.computer === "local") {
       setWarning({ botId: bot.id, threadId: bot.threadId });
@@ -33,6 +33,7 @@ export function useThreadApproval(bot: Bot | undefined): { choice: ApprovalChoic
   const choice: ApprovalChoice | undefined = bot && engine && !remoteClient ? {
     approvalMode: bot.approvalMode,
     autoApprove: bot.autoApprove,
+    approvalCeiling: bot.approvalCeiling,
     providerName: engine.displayName,
     driverKind: engine.driverKind,
     onSelect,

@@ -13,18 +13,14 @@ You'll get a response as soon as possible, normally within a few days.
 
 ## Scope notes for researchers
 
-- The harness server binds **127.0.0.1 only**. Packaged builds allow anonymous loopback reads, but
-  public mutations require either the desktop's private per-launch capability or a paired session;
-  built-in agent integrations use narrower per-turn capabilities. Anything that makes it reachable
-  from off-machine without a paired session, lets one bot reuse another turn's capability, or lets
-  a local *unprivileged other user* drive it is a vulnerability. On a hosted or shared workspace
-  (service loopback trust, see `docs/self-hosting.md`) a session-less loopback caller — which
-  includes every bot's shell — may use only the routes in `SERVICE_ALLOW`
-  (`server/request-auth.ts`); reaching an admin route or approving a card that way is a
-  vulnerability. Known and documented, not yet closed: that caller keeps the Slack worker's
-  guarded routes, so a bot's shell can post into an existing Full-access thread, or open one while
-  shared Full access is on, and get Full-access work done without a card. A worker-only relay token
-  is the planned fix.
+- The harness binds **127.0.0.1** by default. The packaged desktop requires its private per-launch
+  capability or a paired session for workspace reads and writes. Health, branding and pairing are
+  available before sign-in. Built-in agent integrations use narrower per-turn capabilities.
+  Bundled standalone and hosted servers default to service trust. A session-less loopback caller may
+  reach only the routes in `SERVICE_ALLOW` (`server/request-auth.ts`). Service callers can start
+  guarded Ask turns, stop requests and decline cards. They cannot open Full-access threads, request
+  a guarded Full-access turn or approve cards. The Slack worker and local bot shells still share this
+  limited access, including the service read routes.
 - API keys live in `~/.openmausbot/config.json` and are write-only through the API (`configured`
   booleans out, never values). Any path that echoes a stored secret back — API response, SSE event,
   log line, argv visible in `ps` — is a vulnerability.

@@ -3,7 +3,7 @@
 // exact saved commands and remembered MCP read tools, Approve for me's web search, and a bot's plain reads of its own files
 // at every level (own-file-reads.ts). A bot's question always reaches a human.
 
-import { supportsApprovalMode, type ApprovalMode } from "../shared/approval-mode.ts";
+import { approvalModeAllowed, supportsApprovalMode, type ApprovalCeiling, type ApprovalMode } from "../shared/approval-mode.ts";
 import { failedTurnTool, type FailedTurnTool } from "../shared/failed-turn.ts";
 import { isOutboundTool } from "../shared/outbound.ts";
 import type { ProviderAdapter, RequestOutcome } from "./contracts.ts";
@@ -43,6 +43,7 @@ export function delegatedApprovalMode(input: {
   senderMode: ApprovalMode;
   sameBot: boolean;
   recipientMode: ApprovalMode;
+  recipientCeiling?: ApprovalCeiling;
   recipientDriverKind: string | undefined;
 }): ApprovalMode | null {
   if (!input.senderIsChief || input.sameBot) return null;
@@ -52,7 +53,7 @@ export function delegatedApprovalMode(input: {
   if (own === undefined) return null;
   for (const mode of ["full", "auto", "edits"] as const) {
     const rank = LEVEL_RANK[mode]!;
-    if (rank > sender) continue;
+    if (rank > sender || !approvalModeAllowed(mode, input.recipientCeiling)) continue;
     if (rank <= own) return null;
     if (supportsApprovalMode(input.recipientDriverKind, mode)) return mode;
   }

@@ -29,13 +29,8 @@ export interface RequestAuthResult {
 const LOOPBACK_SCOPES: readonly Scope[] = ["admin", "client"];
 const SERVICE_SCOPES: readonly Scope[] = ["client"];
 
-/** What a `service`-trust loopback caller may reach: health and identity, the cloud Slack worker's routes (it
- * shares the workspace's network namespace), and the turn-scoped capability routes, whose bearer the handler checks.
- *
- * Open risk: a bot's shell is a loopback caller too, so it can do everything the Slack worker does: post into any
- * bot's thread through the guarded route, including an existing Full-access thread, open new Full-access threads
- * while the operator's shared Full access is on, stop a request and decline a card. Planned fix: a relay token only
- * the Slack worker holds, so these routes stop answering session-less loopback. */
+/** The Slack worker and bot shells share this network namespace. Service trust admits guarded Ask work and
+ * read routes, but never elevates a sender above Ask. Internal handlers check a separate per-turn bearer. */
 export const SERVICE_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: RegExp }> = [
   { methods: ["GET"], path: /^\/api\/health$/ },
   { methods: ["GET"], path: /^\/api\/auth\/session$/ },
@@ -65,8 +60,8 @@ export function ownerOrAdmin(auth: RequestAuth): boolean {
   return auth.kind === "loopback" ? auth.trust !== "service" : auth.scopes.includes("admin");
 }
 
-/** Packaged desktop: `owner`. Else OMB_LOOPBACK_TRUST=owner|service; unset, a hosted workspace (any OMB_ADMIN_*)
- * gets `service` and a headless server `owner`. Any other value fails closed. `localBrowsers`: see localBrowserTrust. */
+/** Packaged desktop uses its owner capability. A standalone build defaults to service trust, and a source checkout
+ * defaults to owner trust for development and fixtures. An explicit invalid OMB_LOOPBACK_TRUST value fails closed. */
 export function resolveLoopbackTrust(input: {
   env?: NodeJS.ProcessEnv;
   desktopManaged: boolean;
@@ -104,7 +99,8 @@ function loopbackTrust(input: Parameters<typeof resolveLoopbackTrust>[0]): { tru
     return { trust: "service", reason: "OMB_LOOPBACK_TRUST", warning: `OMB_LOOPBACK_TRUST="${raw.replace(/[^\w.-]/g, "").slice(0, 40)}" is not owner or service; using service` };
   }
   if (input.hostedWorkspace) return { trust: "service", reason: "hosted workspace" };
-  return { trust: "owner", reason: "self-hosted default" };
+  if (input.fromSource) return { trust: "owner", reason: "source development" };
+  return { trust: "service", reason: "self-hosted default" };
 }
 
 export function isLoopbackHost(host: string | undefined): boolean {
@@ -527,7 +523,7 @@ export interface ResolveOptions {
   cookieName: string;
   streamPath: string;
   url: URL;
-  /** Desktop capability over Electron's private child port: with it, every public loopback mutation must come through the desktop's web session. */
+  /** Packaged desktop's private capability. Workspace requests need it or a paired session, even on loopback. */
   loopbackMutationToken?: string;
   companionMutationToken?: string;
   features?: { sharedComputers?: boolean };
@@ -548,6 +544,10 @@ const CLI_OWNER_ROUTE = /^\/api\/auth\/pairing$/;
 
 const DESKTOP_OWNER_HEADER = "x-openmausbot-desktop-owner";
 
+function usesOwnCapability(method: string, path: string): boolean {
+  return path.startsWith("/api/internal/") || (method === "POST" && path === "/api/testing/internal-capability");
+}
+
 function mutatingPublicRoute(method: string, path: string): boolean {
   const upper = method.toUpperCase();
   // A legacy GET that syncs upstream state and can resume a paused turn: classify by effect, not verb.
@@ -565,8 +565,7 @@ function mutatingPublicRoute(method: string, path: string): boolean {
   if (/^\/api\/bots\/[\w-]+\/browser\/stream$/.test(path)) return true;
   if (["GET", "HEAD", "OPTIONS"].includes(upper)) return false;
   // Internal routes carry their own per-boot authorization; pairing-code exchange is public (the one-time code is its authorization).
-  return !path.startsWith("/api/internal/") &&
-    path !== "/api/testing/internal-capability" &&
+  return !usesOwnCapability(upper, path) &&
     path !== "/api/auth/pair" &&
     path !== "/api/pair";
 }
@@ -640,8 +639,14 @@ export function resolveRequestAuth(req: IncomingMessage, options: ResolveOptions
     const desktopOwner = options.loopbackMutationToken !== undefined &&
       secureTokenMatch(headerValue(req.headers[DESKTOP_OWNER_HEADER]), options.loopbackMutationToken) && fromOwnPage(req);
     if (fromBrowser(req) && !desktopOwner && !options.trustLocalBrowser) return deny(401, BROWSER_SIGN_IN);
-    if (options.loopbackMutationToken !== undefined && mutatingPublicRoute(method, path) && !desktopOwner) {
-      return deny(403, "forbidden: this change must come from the desktop app or a paired device");
+    if (options.loopbackMutationToken !== undefined && !desktopOwner) {
+      const upper = method.toUpperCase();
+      // The parent identifies its child from health before sending the desktop capability to that port.
+      if ((upper === "GET" && path === "/api/health") || usesOwnCapability(upper, path)) {
+        return { auth: { kind: "loopback", scopes: [], trust: "service" }, status: 401, error: "" };
+      }
+      const action = mutatingPublicRoute(method, path) ? "change" : "read";
+      return deny(403, `forbidden: this ${action} must come from the desktop app or a paired device`);
     }
     if (options.loopbackMutationToken === undefined && options.loopbackTrust === "service") {
       if (

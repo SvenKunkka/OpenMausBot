@@ -547,7 +547,7 @@ inbox is unread.
 An ask in the person's own private chat, where they are, stays only there. The Admins' asks (a bot nobody owns) are not
 anyone's inbox. A member without any bot of their own gets the notification where it was written, as before.
 
-**A teammate's question.** At Full access ("Just do it", every bot's default) a question from work the person started
+**A teammate's question.** At Full access ("Just do it") a question from work the person started
 and a bot handed on never reaches them unless only they can give what it asks (a sign-in or code, a payment, a secret or
 an account of theirs; work a webhook or another outside event started still asks them, and so does work in their
 private chat, whose question's words stay there): the bot that handed the work on answers it, and with no answer from it the bot goes on with the default it

@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ListChecks } from "lucide-react";
 
-import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
+import { approvalModeFor, type ApprovalCeiling, type ApprovalMode } from "../../shared/approval-mode";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
 import { MENU_ITEM_SEPARATOR, MENU_SHEET } from "./menu-recipe";
@@ -24,6 +24,7 @@ export {
 export function ApprovalModeSelector({
   approvalMode,
   autoApprove,
+  approvalCeiling,
   providerName,
   driverKind,
   onSelect,
@@ -37,6 +38,7 @@ export function ApprovalModeSelector({
 }: {
   approvalMode?: ApprovalMode;
   autoApprove?: boolean;
+  approvalCeiling?: ApprovalCeiling;
   providerName: string;
   driverKind: string;
   onSelect: (mode: ApprovalMode) => void;
@@ -52,12 +54,12 @@ export function ApprovalModeSelector({
   const motion = useMenuMotion(open);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const mode = shownApprovalMode(driverKind, approvalModeFor({ approvalMode, autoApprove }));
+  const mode = shownApprovalMode(driverKind, approvalModeFor({ approvalMode, autoApprove, approvalCeiling }));
   const allOptions = approvalModeOptions();
   const current = approvalModeOptionsFor(driverKind).find((option) => option.mode === mode)
     ?? allOptions.find((option) => option.mode === mode)
     ?? allOptions[0];
-  const visibleOptions = approvalModeOptionsFor(driverKind, trustedModesAvailable);
+  const visibleOptions = approvalModeOptionsFor(driverKind, trustedModesAvailable, approvalCeiling);
   const requiresLocalDesktop = approvalModeSelectionRequiresLocalDesktop(
     mode,
     trustedModesAvailable,
@@ -130,10 +132,9 @@ export function ApprovalModeSelector({
           aria-label={t("approvalMode.menuAria", { provider: providerName })}
           {...motion.exitProps}
           className={cn(
-            "absolute z-40 w-[340px] overflow-hidden", MENU_SHEET,
+            "absolute z-40 w-[min(340px,calc(100vw-2rem))] overflow-hidden", MENU_SHEET,
             menuDirection === "up" ? "bottom-full mb-2" : "top-full mt-2",
             align === "right" ? "right-0" : "left-0",
-            wide && "w-full min-w-[340px]",
             motion.className,
           )}
         >

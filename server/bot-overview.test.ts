@@ -64,8 +64,8 @@ describe("buildBotOverview", () => {
     expect(overview.does).toEqual([]);
   });
 
-  it("describes a fresh bot at the default level, Full access", () => {
-    expect(buildBotOverview(baseFacts()).wont).toEqual(WONT_ORDER.slice(1, -1));
+  it("describes a fresh bot at the default level, Ask", () => {
+    expect(buildBotOverview(baseFacts()).wont).toEqual(WONT_ORDER);
   });
 
   it("drops the first wont line when autoApprove is on", () => {

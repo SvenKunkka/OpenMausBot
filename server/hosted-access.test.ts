@@ -394,16 +394,25 @@ describe("hosted bridge in the full server", () => {
     expect(await call("/api/live/session", { method: "POST", local: true, body: { botId, sdp: "v=0\r\n", client: "web" } })).toMatchObject({ status: 403, body: { error: expect.stringContaining("may only use the service routes") } });
     const health = await call("/api/health", { local: true });
     expect(health.status).toBe(200);
-    expect(health.body.capabilities).toMatchObject({ guardedMessages: 1, guardedRequests: 1, sharedWorkspaceFullAccess: 1 });
+    expect(health.body.capabilities).toMatchObject({ guardedMessages: 1, guardedRequests: 1 });
+    expect(health.body.capabilities).not.toHaveProperty("sharedWorkspaceFullAccess");
+    expect(health.body.capabilities).not.toHaveProperty("guardedFullAccess");
     expect((await call("/api/bots?messages=0", { local: true })).status).toBe(200);
-    const task = await call(`/api/bots/${botId}/tasks`, { method: "POST", local: true, body: { title: "Slack · C1 · 1.0", approvalMode: "full" } });
+    const refusedFull = await call(`/api/bots/${botId}/tasks`, { method: "POST", local: true, body: { title: "Slack · C1 · 1.0", approvalMode: "full" } });
+    expect(refusedFull.status).toBe(403);
+    const task = await call(`/api/bots/${botId}/tasks`, { method: "POST", local: true, body: { title: "Slack · C1 · 1.0" } });
     expect(task.status, JSON.stringify(task.body)).toBe(201);
+    expect(task.body.task.approvalMode).toBe("ask");
     const threadId = task.body.task.threadId as string;
     const page = await call(`/api/threads/${threadId}/messages?limit=0`, { local: true });
     expect(page.status).toBe(200);
     const sendId = "slackjob_0123456789abcdef";
-    const sent = await call(`/api/bots/${botId}/messages/guarded`, { method: "POST", local: true, body: {
+    const refusedSend = await call(`/api/bots/${botId}/messages/guarded`, { method: "POST", local: true, body: {
       threadId, text: "hello from Slack", sendId, expectedActiveLeafId: page.body.activeLeafId ?? null, expectedApprovalMode: "full",
+    } });
+    expect(refusedSend.status).toBe(403);
+    const sent = await call(`/api/bots/${botId}/messages/guarded`, { method: "POST", local: true, body: {
+      threadId, text: "hello from Slack", sendId, expectedActiveLeafId: page.body.activeLeafId ?? null, expectedApprovalMode: "ask",
     } });
     expect(sent.status, JSON.stringify(sent.body)).toBe(202);
     expect((await call(`/api/bots/${botId}/requests/${sendId}?threadId=${threadId}`, { local: true })).status).toBe(200);

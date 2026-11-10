@@ -21,14 +21,20 @@ before, and so does every read in a guest's turn, since a bot's folder holds its
 owner's memory. On a Cloud the bot's box also shows it its own `SOUL.md`,
 read-only.
 
-Every bot and conversation starts at **Full access**, the default T3 Code uses
-too: each engine runs in its own most permissive mode, and a real question or
-a missing credential still reaches you. That covers a bot made in New bot,
-through the API or by onboarding, each new thread, a Chief's new teammates,
-and bots imported from a team backup, a shared team file or the organization
-library. A level a person picks stays until someone changes it. On a hosted
-company workspace the default stays Ask, because Full access there comes only
-from the operator's dedicated policy.
+New bots default to **Ask for approval**. A new conversation inherits its
+bot's setting. Existing explicit choices are preserved. On a hosted company
+workspace, Full access requires the operator's dedicated policy.
+
+The **Approval ceiling** in a bot's permission settings limits that bot and
+every conversation, including work delegated by a Chief of Staff. **Ask only**
+blocks elevated modes. **Up to automatic review** permits Auto and Auto-accept
+edits where the engine supports them, and blocks Full and Custom. A saved
+mode above the ceiling resets to Ask, and clearing the ceiling does not
+restore it. Change the ceiling while the bot is idle from the packaged
+desktop app or an administrator session. For shared self-hosting, use
+service trust so ordinary local processes cannot mint an administrator
+session. The ceiling controls approval modes. The provider's workspace
+access and individually remembered permissions have separate controls.
 
 | Level | Behavior |
 | --- | --- |
@@ -105,9 +111,9 @@ The effective setting belongs to the source conversation. An existing Ask
 thread remains Ask even if the bot default is Full; a Full thread works
 without these extra prompts even if the bot default is Ask. A bot nobody has
 set a level on follows the default, and so does each of its threads without a
-level of its own. Bots and threads that saved Ask before Full access became
-the default keep it: choose Full access in the bot's settings, or **Set for
-all bots in this team…**, to move a bot and every one of its threads at once.
+level of its own. Choose Full access in the bot's settings, or **Set for
+all bots in this team…**, to move a bot and every one of its threads at once
+where their ceilings permit it.
 OpenMausBot adds no review card of its own at any level: a bot's profile,
 working folder, model, skill, team setup and team memory changes apply at
 once and leave a one-line receipt with Undo, so the bot continues in the same
@@ -297,8 +303,7 @@ The level set follows the provider-boundary approach in
 [T3 Code's permission modes](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/docs/user/permission-modes.md):
 Supervised, Auto-accept edits, Auto, and Full access, each a provider mode
 rather than an app rule, with a remembered approval that belongs to the
-provider's session. Its default is Full access, and so is OpenMausBot's
-(`DEFAULT_APPROVAL_MODE` in `shared/approval-mode.ts`).
+provider's session. OpenMausBot defaults to Ask.
 
 ## Verification for contributors
 

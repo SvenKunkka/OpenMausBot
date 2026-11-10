@@ -268,7 +268,7 @@ async function api(port: number, path: string, init: { method?: string; body?: s
   return { status: res.status, body };
 }
 
-export const SERVICE_TRUST_HELP = "This server does not treat commands on this computer as its owner (OMB_LOOPBACK_TRUST=service, or a hosted workspace), so it will not pair devices or list sessions for them. Sign in as an admin and use Settings → Remote access, let people sign in with their email (openmausbot access add you@example.com), or restart the server with OMB_LOOPBACK_TRUST=owner.";
+export const SERVICE_TRUST_HELP = "This server does not treat commands on this computer as its owner (service trust), so it will not pair devices or list sessions for them. Sign in as an admin and use Settings → Remote access, let people sign in with their email (openmausbot access add you@example.com), or restart the server with OMB_LOOPBACK_TRUST=owner.";
 
 function refusedAsService(status: number, body: any): boolean {
   return status === 403 && typeof body?.error === "string" && /shared server|Sign in through the workspace portal/.test(body.error);
@@ -725,7 +725,9 @@ export async function runServe(options: CliOptions, log: (line: string) => void 
   };
   if (options.local) delete env.OMB_PUBLIC_URL;
   // The per-launch secret goes over stdin, not the environment that every engine the server starts inherits.
-  const serviceTrust = resolveLoopbackTrust({ env, desktopManaged: false, hostedWorkspace: hostedWorkspaceConfigured(env) }).trust === "service";
+  const serviceTrust = resolveLoopbackTrust({ env, desktopManaged: false, hostedWorkspace: hostedWorkspaceConfigured(env),
+    fromSource: entry.args.at(-1)?.endsWith(".ts"),
+  }).trust === "service";
   const ownerToken = serviceTrust ? randomBytes(32).toString("base64url") : undefined;
   if (ownerToken) env.OMB_CLI_OWNER_STDIN = "1";
   else delete env.OMB_CLI_OWNER_STDIN;
@@ -887,13 +889,15 @@ export async function runServe(options: CliOptions, log: (line: string) => void 
       }
     } else if (!route) {
       log("");
-      for (const line of noRouteLines(options.port, prefix)) log(line);
+      if (serviceTrust) log(`Open http://127.0.0.1:${options.port} in a browser on this computer.`);
+      else for (const line of noRouteLines(options.port, prefix)) log(line);
     } else if (!serviceTrust) {
       log(`Get a pairing code: ${prefix} pair`);
     }
-    if (serviceTrust && !(options.pair && interactive)) log(`This shared server takes no pairing commands from this machine. Let people sign in with their email: ${prefix} access add you@example.com`);
-    if (interactive && !options.guided) log(`New code later   ${prefix} pair\nStop with Ctrl+C`);
-    if (options.guided) log(`\nKeep this terminal open while using your bots. Ctrl+C stops the server, not your saved work.\nNext time: ${prefix} · Change AI or phone setup: ${prefix} setup · Pair another device: ${prefix} pair`);
+    if (serviceTrust && !(options.pair && interactive)) log(`Let people sign in with their email: ${prefix} access add you@example.com`);
+    const pairAgain = serviceTrust ? "Settings → Remote access" : `${prefix} pair`;
+    if (interactive && !options.guided) log(`New code later   ${pairAgain}\nStop with Ctrl+C`);
+    if (options.guided) log(`\nKeep this terminal open while using your bots. Ctrl+C stops the server, not your saved work.\nNext time: ${prefix} · Change AI or phone setup: ${prefix} setup · Pair another device: ${pairAgain}`);
     return await childExit;
   } finally {
     serveOwnerToken = undefined;

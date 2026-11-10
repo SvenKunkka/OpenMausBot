@@ -1170,9 +1170,14 @@ function injectedEnvironment(cfg: AppConfig, instanceId: string, driver: string)
   return environment;
 }
 
-export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
+export function instanceConfigs(cfg: AppConfig, desktopManaged = process.env.OMB_DESKTOP_PARENT === "1"): InstanceConfigMap {
   const configured = cfg.instances && Object.keys(cfg.instances).length ? cfg.instances : null;
   const map: InstanceConfigMap = withoutComputerEngine(configured ? { ...configured } : { ...DEFAULT_FLEET });
+  // A saved custom fleet predating built-in discovery must still offer the signed-in local CLI on desktop.
+  if (desktopManaged && configured && !Object.hasOwn(map, "codex-local") &&
+      !Object.values(map).some((entry) => entry.driver === "codex")) {
+    map["codex-local"] = { driver: "codex" };
+  }
   if (
     configured &&
     (Object.hasOwn(configured, "claude") || Object.hasOwn(configured, "grok") || Object.hasOwn(configured, "codex"))

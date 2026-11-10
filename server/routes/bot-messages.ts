@@ -137,6 +137,7 @@ export interface BotMessageRouteDeps {
   typedCardAnswer?(auth: RequestAuth, threadId: string, text: string, target: Message | undefined, line: { sendId?: string; sender?: ResolvedSender }): Promise<{ status: number; message?: Message; error?: string } | null>;
   /** On a Team Cloud: why the person a relayed message names may not chat with this bot; null when they may. */
   relayRefusal?(bot: BotRecord, email: string | undefined): string | null;
+  hasRememberedCommands(botId: string): boolean;
   /** The answer to someone's ask to chat with a team bot; null for any other card. */
   resolveAccessRequest?(threadId: string, requestId: string, behavior: string, message: unknown): { status: number; body: unknown } | null;
 }
@@ -213,6 +214,10 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
         return json(res, 400, { error: onBehalfOfInvalid
           ? "onBehalfOf must name the person with an email address, a name, or both"
           : "guarded sends require threadId, sendId, text (or a reaction) and expectedActiveLeafId" });
+      }
+      const serviceRelay = guarded && auth.kind === "loopback" && auth.trust === "service";
+      if (serviceRelay && guardedBody?.data?.expectedApprovalMode === "full") {
+        return json(res, 403, { error: "Full access sends require a signed-in client." });
       }
       const relayed = guardedBody?.data?.reaction === undefined ? null : normalizeReaction(guardedBody.data.reaction);
       if (guardedBody?.data?.reaction !== undefined && (!reactionAnswer(relayed) || !body.replyToId || !guardedBody.data.onBehalfOf)) {
@@ -306,7 +311,8 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
             // No await between these checks and startTurn: never steer or enqueue under stale permissions.
             const expectedMode = body.expectedApprovalMode ?? "ask";
             if (approvalModeFor(currentAtStart) !== expectedMode ||
-                (expectedMode === "ask" && (currentAtStart.autoApprove === true || currentAtStart.alwaysAllow?.length))) {
+                (expectedMode === "ask" && (currentAtStart.autoApprove === true || currentAtStart.alwaysAllow?.length ||
+                  (serviceRelay && deps.hasRememberedCommands(bot.id))))) {
               throw Object.assign(new Error("guarded sends require the exact expected approval mode; Ask cannot have remembered permissions"), { status: 409, code: "guarded_permissions" });
             }
             if (store.activeLeaf(threadId) !== body.expectedActiveLeafId) {

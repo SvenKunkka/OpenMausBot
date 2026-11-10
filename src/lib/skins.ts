@@ -32,7 +32,7 @@ export const SKINS: readonly Skin[] = [
   { id: "graphite", name: "Graphite", tagline: "Quiet charcoal and softened steel blue." },
   { id: "linen", name: "Linen", tagline: "Clean daylight with a restrained navy accent." },
   { id: "dusk", name: "Dusk", tagline: "Muted plum after dark, calm and low-key." },
-  { id: "daylight", name: "Daylight", tagline: "Midnight in reverse. Near-white, ink-black bubbles." },
+  { id: "daylight", name: "Daylight", tagline: "White workspace, cool gray navigation, and clear blue controls." },
   { id: "meadow", name: "Meadow", tagline: "Fresh white with a calm green. The MausBot look." },
   { id: "pop", name: "Pop", tagline: "Cream paper, thick ink outlines, hard shadows. Chunky and cheerful." },
   { id: "halloween", name: "Halloween", tagline: "Plum after dark, lit in pumpkin orange. Bats optional." },
@@ -44,7 +44,7 @@ export const SKINS: readonly Skin[] = [
 export type SkinChoice = SkinId | "system";
 export const THEME_SKINS = { light: "daylight", dark: "midnight" } as const satisfies Record<"light" | "dark", SkinId>;
 
-export const DEFAULT_SKIN_CHOICE: SkinChoice = "system";
+export const DEFAULT_SKIN_CHOICE: SkinChoice = "daylight";
 export const PRIOR_INSTALL_SKIN: SkinId = "midnight";
 
 const KEY = "omb-skin";

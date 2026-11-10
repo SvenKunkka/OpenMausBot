@@ -88,7 +88,7 @@ const fixtureEnv = {
 
 const child = spawn(process.execPath, [join(staging, "server", "index.js")], {
   cwd: staging,
-  env: fixtureEnv,
+  env: { ...fixtureEnv, OMB_LOOPBACK_TRUST: "owner" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 
@@ -282,9 +282,8 @@ if (listening) {
 }
 
 // SECURITY.md's loopback promise has two halves. The backup export above proves the
-// packaged desktop's own loopback may run a public mutation. The other half: the same
-// request is refused when the server runs where "local" includes every bot's shell. Start
-// the same bundle again at service trust and check both sides of that gate.
+// The opted-in owner fixture may run a public mutation. A standalone bundle
+// with no trust override must reject the same request.
 let serviceTrustReport = null;
 if (listening) {
   const serviceHome = mkdtempSync(join(tmpdir(), "omb-smoke-service-"));
@@ -292,7 +291,7 @@ if (listening) {
   const service = spawn(process.execPath, [join(staging, "server", "index.js")], {
     cwd: staging,
     env: { ...fixtureEnv, HOME: serviceHome, USERPROFILE: serviceHome, OMB_DATA_DIR: join(serviceHome, ".openmausbot"),
-      OMB_PORT: String(servicePort), OMB_WEBHOOK_PORT: String(serviceWebhookPort), OMB_LOOPBACK_TRUST: "service" },
+      OMB_PORT: String(servicePort), OMB_WEBHOOK_PORT: String(serviceWebhookPort) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let serviceOutput = "";
@@ -310,11 +309,24 @@ if (listening) {
       await new Promise((resolve) => setTimeout(resolve, 300));
     }
     const healthStatus = serving ? (await fetch(`http://127.0.0.1:${servicePort}/api/health`, { signal: AbortSignal.timeout(10_000) })).status : null;
-    const mutation = await fetch(`http://127.0.0.1:${servicePort}/api/workspace-backup/export`, {
+    const serviceBase = `http://127.0.0.1:${servicePort}`;
+    const post = (route, body) => fetch(`${serviceBase}${route}`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password: "packaged-fixture-password-only" }), signal: AbortSignal.timeout(15_000),
+      body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
     });
-    serviceTrustReport = { serving, healthStatus, exportStatus: mutation.status };
+    const mutation = await post("/api/workspace-backup/export", { password: "packaged-fixture-password-only" });
+    const listing = await fetch(`${serviceBase}/api/bots?messages=0`, { signal: AbortSignal.timeout(10_000) });
+    const bot = (await listing.json()).bots[0];
+    const tasks = `/api/bots/${bot.id}/tasks`;
+    const refusedTask = await post(tasks, { approvalMode: "full" });
+    const ask = await post(tasks, { title: "Service-trust fixture" });
+    const { task } = await ask.json();
+    const refusedSend = await post(`/api/bots/${bot.id}/messages/guarded`, {
+      threadId: task.threadId, sendId: "smoke_0123456789abcdef", text: "Verify service trust",
+      expectedActiveLeafId: null, expectedApprovalMode: "full",
+    });
+    serviceTrustReport = { serving, healthStatus, exportStatus: mutation.status, askStatus: ask.status,
+      askMode: task.approvalMode, fullTaskStatus: refusedTask.status, fullSendStatus: refusedSend.status };
   } catch (error) {
     serviceTrustReport = { error: String(error) };
   } finally {
@@ -514,7 +526,9 @@ if (!backupReport?.ok) {
   process.exit(1);
 }
 if (!serviceTrustReport || serviceTrustReport.error || serviceTrustReport.serving !== true ||
-  serviceTrustReport.healthStatus !== 200 || serviceTrustReport.exportStatus !== 403) {
+  serviceTrustReport.healthStatus !== 200 || serviceTrustReport.exportStatus !== 403 ||
+  serviceTrustReport.askStatus !== 201 || serviceTrustReport.askMode !== "ask" ||
+  serviceTrustReport.fullTaskStatus !== 403 || serviceTrustReport.fullSendStatus !== 403) {
   console.error("the packaged server's loopback trust gate did not hold at service trust:", serviceTrustReport);
   process.exit(1);
 }

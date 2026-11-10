@@ -22,7 +22,7 @@ import { pickBotName } from "./names.ts";
 import { rotationColor } from "./bot-look.ts";
 import { redactBotAuthored } from "./message-redaction.ts";
 import { AVATAR_FOCUS_CENTER, AVATAR_ZOOM_MIN, botAvatarProfile, clampAvatarFocus, clampAvatarZoom } from "../shared/bot-avatar.ts";
-import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk, threadApproval, type ApprovalMode } from "../shared/approval-mode.ts";
+import { approvalModeAllowed, approvalModeFor, isApprovalCeiling, isApprovalMode, modelSwitchNeedsAsk, threadApproval, type ApprovalCeiling, type ApprovalFields, type ApprovalMode } from "../shared/approval-mode.ts";
 import { lastChangeRequestUrl } from "../shared/thread-link.ts";
 import { REMOVED_COMPUTER_DRIVER, type ComputerEngineMove } from "./computer-engine-removal.ts";
 import type { TeamSetupRequest, TeamSetupResult } from "../shared/team-setup.ts";
@@ -364,6 +364,10 @@ export class Store {
       if (b.managedSections !== undefined && (!b.chiefOfStaff || !Array.isArray(b.managedSections) ||
           b.managedSections.length > 100 || b.managedSections.some(section => typeof section !== "string" || section.length > 60))) {
         delete b.managedSections;
+        botsMigrated = true;
+      }
+      if (b.approvalCeiling !== undefined && !isApprovalCeiling(b.approvalCeiling)) {
+        b.approvalCeiling = "ask";
         botsMigrated = true;
       }
       if (b.approvalMode !== undefined && !isApprovalMode(b.approvalMode)) {
@@ -2134,9 +2138,27 @@ export class Store {
     return moved;
   }
 
+  setBotApprovalCeiling(botId: string, ceiling: ApprovalCeiling | undefined): BotRecord | null {
+    const bot = this.bot(botId);
+    if (!bot || bot.approvalCeiling === ceiling) return bot ?? null;
+    const mustReset = (fields: ApprovalFields) => {
+      const mode = approvalModeFor(fields);
+      return !approvalModeAllowed(mode, ceiling) || !approvalModeAllowed(mode, bot.approvalCeiling);
+    };
+    const botPatch = mustReset(threadApproval({}, bot)) ? structuredClone(ASK_NOW) : {};
+    const taskPatches = (bot.tasks ?? []).map(task => mustReset(threadApproval(task, bot)) ? structuredClone(ASK_NOW) : {});
+    const tasks = bot.tasks?.map((task, index) => ({ ...task, ...taskPatches[index] }));
+    const next = { ...bot, ...botPatch, approvalCeiling: ceiling, tasks };
+    saveRegistryFor("bots.json", "the bot's approval ceiling", () => this.saveBots(this.bots.map(candidate => candidate === bot ? next : candidate)));
+    Object.assign(bot, botPatch, { approvalCeiling: ceiling });
+    bot.tasks?.forEach((task, index) => Object.assign(task, taskPatches[index]));
+    this.emit({ type: "bot", botId });
+    return bot;
+  }
+
   setAllThreadApprovalMode(botId: string, mode: Exclude<ApprovalMode, "custom">): BotRecord | null {
     const bot = this.bot(botId);
-    if (!bot) return null;
+    if (!bot || !approvalModeAllowed(mode, bot.approvalCeiling)) return null;
     const patch = { approvalMode: mode, autoApprove: mode === "auto", ...(mode === "full" ? { alwaysAllow: [] } : {}) };
     const tasks = (bot.tasks ?? []).map(task => ({ ...task, ...patch }));
     const next = { ...bot, ...patch, approvalGrant: undefined, tasks };
@@ -2194,8 +2216,8 @@ export class Store {
       ...(openedBy ? { openedBy: structuredClone(openedBy) } : {}),
       resumeCursors: {},
       ...(modelSelection && !sameModelSelection(modelSelection, bot.modelSelection) ? { modelSelection: structuredClone(modelSelection) } : {}),
-      approvalMode: approvalMode ?? approvalModeFor(bot),
-      autoApprove: approvalMode ? false : Boolean(bot.autoApprove),
+      approvalMode: approvalMode && approvalModeAllowed(approvalMode, bot.approvalCeiling) ? approvalMode : approvalModeFor(bot),
+      autoApprove: !approvalMode && approvalModeFor(bot) === "auto",
       alwaysAllow: approvalMode ? [] : [...(bot.alwaysAllow ?? [])],
       unread: false,
       activity: "idle",

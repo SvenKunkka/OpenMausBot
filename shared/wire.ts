@@ -2,7 +2,7 @@
  * here is one the server emits in every response and SSE frame that carries
  * the shape. */
 import type { DataBroadcast } from "./data-surface.ts";
-import type { ApprovalMode } from "./approval-mode.ts";
+import type { ApprovalCeiling, ApprovalMode } from "./approval-mode.ts";
 import type { ToolScope } from "./tool-scope.ts";
 import type { CommandAllowlistCandidate } from "./command-allowlist.ts";
 import type { TurnDigest } from "./digest.ts";
@@ -331,6 +331,8 @@ export interface WireBot extends DefaultBotFields, BotAccessFields {
   autoApprove?: boolean;
   /** Canonical approval level. Missing resolves through autoApprove. */
   approvalMode?: ApprovalMode;
+  /** Maximum automatic approval level for this bot and all its conversations. */
+  approvalCeiling?: ApprovalCeiling;
   /** Tools this bot may always use without asking. */
   alwaysAllow?: string[];
   /** Speak this bot's replies aloud as they settle, without being asked. */

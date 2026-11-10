@@ -1,6 +1,6 @@
 import { FilePen, Hand, Settings, ShieldAlert, ShieldCheck } from "lucide-react";
 
-import { hasNativeAutoReview, supportsApprovalMode, type ApprovalMode } from "../../shared/approval-mode";
+import { approvalModeAllowed, hasNativeAutoReview, supportsApprovalMode, type ApprovalCeiling, type ApprovalMode } from "../../shared/approval-mode";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 
@@ -53,9 +53,9 @@ export function approvalModeOptions(): ApprovalModeOption[] {
   }));
 }
 
-export function approvalModeOptionsFor(driverKind: string, trustedModesAvailable = true) {
+export function approvalModeOptionsFor(driverKind: string, trustedModesAvailable = true, ceiling?: ApprovalCeiling) {
   return approvalModeOptions()
-    .filter((option) => supportsApprovalMode(driverKind, option.mode)
+    .filter((option) => supportsApprovalMode(driverKind, option.mode) && approvalModeAllowed(option.mode, ceiling)
       // Antigravity has no native reviewer: its full-access grant is shown as Auto below, and the real Auto, which
       // behaves as Ask, is not offered.
       && (driverKind !== "antigravityAgent" || option.mode !== "auto")

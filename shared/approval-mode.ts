@@ -5,12 +5,13 @@
 export const APPROVAL_MODES = ["ask", "edits", "auto", "full", "custom"] as const;
 
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
+export type ApprovalCeiling = "ask" | "auto";
 
 /** Only providers with an implemented permission mapping may expose a level.
  * `edits` (auto-accept edits) exists where the engine has such a mode:
  * Claude and Grok `acceptEdits`, Antigravity `auto_edit`, Qwen `auto-edit`,
  * Gemini `auto_edit`. Codex's Ask already runs `workspace-write`, so an edits
- * level would change nothing there. Full access, the default level, runs on
+ * level would change nothing there. Full access runs on
  * every engine: in the engine's own most permissive mode, or, where it has
  * none, with the harness answering the permission requests it leaves (the
  * chat-completions family, ACP agents such as Kimi or Hermes, Pi's computer
@@ -64,11 +65,16 @@ export function isApprovalMode(value: unknown): value is ApprovalMode {
   return typeof value === "string" && (APPROVAL_MODES as readonly string[]).includes(value);
 }
 
-/** The level a bot or conversation runs at until a person picks one: Full
- * access, as in t3code (its DEFAULT_RUNTIME_MODE). Each provider maps it to
- * its own most permissive mode; a real question or a missing credential
- * still reaches a person. */
-export const DEFAULT_APPROVAL_MODE: ApprovalMode = "full";
+export function isApprovalCeiling(value: unknown): value is ApprovalCeiling {
+  return value === "ask" || value === "auto";
+}
+
+export function approvalModeAllowed(mode: ApprovalMode, ceiling: unknown): boolean {
+  if (ceiling === undefined) return true;
+  return APPROVAL_RANK[mode] <= APPROVAL_RANK[isApprovalCeiling(ceiling) ? ceiling : "ask"];
+}
+
+export const DEFAULT_APPROVAL_MODE: ApprovalMode = "ask";
 
 let defaultApprovalMode: ApprovalMode = DEFAULT_APPROVAL_MODE;
 
@@ -82,6 +88,7 @@ export function setDefaultApprovalMode(mode: ApprovalMode): void {
  * safe Auto, and an unknown persisted value fails closed to Ask. */
 export function approvalModeFor(bot: {
   approvalMode?: unknown;
+  approvalCeiling?: unknown;
   autoApprove?: unknown;
   /** Server-only two-phase grant marker. Until Electron confirms it, the
    * stored elevated selection is deliberately executable only as Ask. */
@@ -92,9 +99,10 @@ export function approvalModeFor(bot: {
   const otherThread = grant && typeof grant === "object" && "threadOnly" in grant && grant.threadOnly === true &&
     "threadId" in grant && typeof grant.threadId === "string" && typeof bot.threadId === "string" && grant.threadId !== bot.threadId;
   if (grant && !otherThread) return "ask";
-  if (isApprovalMode(bot.approvalMode)) return bot.approvalMode;
-  if (bot.autoApprove === true) return "auto";
-  return bot.approvalMode === undefined ? defaultApprovalMode : "ask";
+  const mode = isApprovalMode(bot.approvalMode) ? bot.approvalMode
+    : bot.autoApprove === true ? "auto"
+    : bot.approvalMode === undefined ? defaultApprovalMode : "ask";
+  return approvalModeAllowed(mode, bot.approvalCeiling) ? mode : "ask";
 }
 
 /** A private late-grant recovery may revoke an elevated mode even after a

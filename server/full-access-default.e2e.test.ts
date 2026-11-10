@@ -7,7 +7,7 @@ import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import { waitForExit } from "./testing/cleanup.ts";
 
-it("starts new bots and threads at Full access on each engine family, and keeps a person's Ask", async () => {
+it("starts new bots and threads at Ask on each engine family, and preserves an explicit Full choice", async () => {
   const fixture = await launchVerificationServer({}, undefined, undefined, undefined, undefined, undefined, ["codex"]);
   const { dataDir, url, logPath } = fixture.info;
   const codexDump = join(dataDir, "codex-dump.json");
@@ -59,38 +59,41 @@ it("starts new bots and threads at Full access on each engine family, and keeps 
     const bots: Record<string, any> = {};
     for (const instanceId of ["claude", "codex", "droid"]) {
       bots[instanceId] = (await api("POST", "/api/bots", { name: `Default ${instanceId}`, modelSelection: model(instanceId) }, 201)).bot;
-      expect(bots[instanceId].approvalMode).toBe("full");
+      expect(bots[instanceId].approvalMode).toBe("ask");
       expect(stored(bots[instanceId].id).approvalMode).toBeUndefined();
     }
     const threads: Record<string, string> = {};
     for (const [instanceId, bot] of Object.entries(bots)) {
       const task = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: `New ${instanceId} thread` }, 201)).task;
-      expect(task.approvalMode).toBe("full");
+      expect(task.approvalMode).toBe("ask");
       threads[instanceId] = task.threadId;
       await send(bot.id, task.threadId);
+      if (instanceId === "droid") {
+        await expect.poll(() => openCard(task.threadId), { timeout: 20_000 }).toBeTruthy();
+        const card = await openCard(task.threadId);
+        await api("POST", `/api/threads/${task.threadId}/respond`, { requestId: card.requestId, behavior: "deny" });
+      }
       expect((await wait(bot.id, task.threadId)).status).toBe("settled");
     }
     const claudeArgv = JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")).argv as string[];
-    expect(claudeArgv[claudeArgv.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
+    expect(claudeArgv[claudeArgv.indexOf("--permission-mode") + 1]).toBe("default");
     const codexTurn = JSON.parse(readFileSync(codexDump, "utf8")).calls.find((call: any) => call.method === "turn/start");
-    expect(codexTurn.params).toMatchObject({ approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } });
+    expect(codexTurn.params).toMatchObject({ approvalPolicy: "on-request", sandboxPolicy: { type: "workspaceWrite" } });
     expect(JSON.parse(readFileSync(`${droidDump}.config.json`, "utf8"))[0])
-      .toMatchObject({ method: "session/set_mode", params: { modeId: "auto-high" } });
-    const decisions = (await api("GET", "/api/decisions")).decisions as any[];
-    expect(decisions.filter((row) => row.threadId === threads.droid).map((row) => `${row.decision}:${row.source}`))
-      .toEqual(["auto-approved:full-access"]);
+      .toMatchObject({ method: "session/set_mode", params: { modeId: "normal" } });
     expect(await openCard(threads.droid)).toBeUndefined();
 
     const starter = (await api("GET", "/api/bots?messages=0")).bots.find((bot: any) => !Object.values(bots).some((mine: any) => mine.id === bot.id));
-    expect(starter.approvalMode).toBe("full");
+    expect(starter.approvalMode).toBe("ask");
     expect(stored(starter.id).approvalMode).toBeUndefined();
     await api("PATCH", `/api/bots/${starter.id}`, { modelSelection: model("codex") });
     await send(starter.id, starter.threadId);
     expect((await wait(starter.id, starter.threadId)).status).toBe("settled");
     expect(JSON.parse(readFileSync(codexDump, "utf8")).calls.findLast((call: any) => call.method === "turn/start").params)
-      .toMatchObject({ approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } });
+      .toMatchObject({ approvalPolicy: "on-request", sandboxPolicy: { type: "workspaceWrite" } });
 
     expect((await api("PATCH", `/api/bots/${bots.droid.id}`, { approvalMode: "ask", applyToAllThreads: true })).bot.approvalMode).toBe("ask");
+    await api("PATCH", `/api/bots/${bots.claude.id}`, { approvalMode: "full", applyToAllThreads: true });
     await waitForExit(server!, { signal: "SIGTERM" });
     await start();
     expect(stored(bots.droid.id).approvalMode).toBe("ask");

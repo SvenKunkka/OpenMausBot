@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { approvalModeFor, isApprovalMode, type ApprovalMode } from "../../shared/approval-mode.ts";
+import { approvalModeAllowed, approvalModeFor, isApprovalCeiling, isApprovalMode, type ApprovalMode } from "../../shared/approval-mode.ts";
 import { normalizeConnectorScopes } from "../../shared/connector-scopes.ts";
 import { normalizeOutboundPolicy } from "../../shared/outbound.ts";
 import { normalizePhoneApps } from "../../shared/phone-apps.ts";
@@ -101,6 +101,27 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         return json(res, 400, { error: "body must be a JSON object" });
       }
       const pairedDevice = req.headers["x-openmausbot-companion"] === "1";
+      if (Object.hasOwn(body, "approvalCeiling")) {
+        if (pairedDevice || !auth.scopes.includes("admin") ||
+            (auth.kind === "loopback" && (!DESKTOP_MANAGED || auth.companionDevice))) {
+          return json(res, 403, { error: "Change the approval ceiling from the desktop app or a signed-in administrator session." });
+        }
+        if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
+          return json(res, 401, { error: "unauthorized: this session has expired or was revoked" });
+        }
+        if (Object.keys(body).length !== 1 || (body.approvalCeiling !== null && !isApprovalCeiling(body.approvalCeiling))) {
+          return json(res, 400, { error: "Send only approvalCeiling, set to ask, auto, or null." });
+        }
+        const bot = store.bot(m[1]);
+        if (!bot) return json(res, 404, { error: "no such bot" });
+        const ceiling = body.approvalCeiling ?? undefined;
+        if (bot.approvalCeiling !== ceiling &&
+            (bot.approvalGrant || bot.busy || activeGroupTurnForBot(bot.id) ||
+              store.tasks(bot.id).some(task => threadBusy(bot.id, task.threadId)))) {
+          return json(res, 409, { error: "Stop this bot's work and finish pending approvals before changing its approval ceiling." });
+        }
+        return json(res, 200, { bot: wireBot(store.setBotApprovalCeiling(bot.id, ceiling)!) });
+      }
       if ((auth.kind === "session" && !auth.scopes.includes("admin")) || pairedDevice) {
         const session = auth.kind === "session" ? auth.session : undefined;
         const level = pairedDevice ? "chat" : deps.levelOf(auth, m[1]);
@@ -473,6 +494,9 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       }
       const currentApprovalMode = approvalModeFor(existingBot ?? {});
       if (body.approvalMode !== undefined || body.autoApprove !== undefined) {
+        if (!approvalModeAllowed(requestedApprovalMode, existingBot?.approvalCeiling)) {
+          return json(res, 403, { error: "This approval mode exceeds the bot's approval ceiling." });
+        }
         patch.approvalMode = requestedApprovalMode;
         // Older paired apps read autoApprove as exactly Auto.
         patch.autoApprove = requestedApprovalMode === "auto";
@@ -663,6 +687,10 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         sectionKey(existingBot?.section) !== sectionKey(section);
       let bot: BotRecord | null;
       const freshBrowserBot = store.bot(m[1]);
+      if ((body.approvalMode !== undefined || body.autoApprove !== undefined) &&
+          !approvalModeAllowed(requestedApprovalMode, freshBrowserBot?.approvalCeiling)) {
+        return json(res, 403, { error: "This approval mode exceeds the bot's approval ceiling." });
+      }
       // Rechecked: the awaits above can yield after the first memory check.
       if (freshBrowserBot && body.memoryEnabled !== undefined &&
           body.memoryEnabled !== (freshBrowserBot.memoryEnabled !== false) &&

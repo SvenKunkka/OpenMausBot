@@ -4,6 +4,7 @@ import { request } from "node:http";
 import { describe, expect, it } from "vitest";
 
 import { launchVerificationServer } from "../scripts/control-omb.ts";
+import { launchOwnHomeFixture } from "../scripts/testing/own-home-fixture.ts";
 import { BROWSER_SIGN_IN } from "./request-auth.ts";
 
 /** Headers set exactly as given: Chrome's Sec-Fetch-* and Origin, which a page cannot change. */
@@ -73,3 +74,34 @@ describe("a browser on a self-hosted server's own machine", () => {
     }
   }, 60_000);
 });
+
+it("keeps packaged desktop history private to the app and paired clients", async () => {
+  const fixture = await launchOwnHomeFixture();
+  try {
+    const { desktopBase: url, local } = fixture;
+    const created = await local("POST", "/api/bots", { name: "Private fixture" });
+    expect(created.status).toBe(201);
+    const { threadId } = created.body.bot;
+    const denied = [
+      "/api/bots", "/api/config", "/api/auth/session", `/api/threads/${threadId}/messages`,
+      "/api/attachments/private.pdf", "/api/events",
+    ];
+    for (const path of denied) expect((await raw(url, path, {})).status, path).toBe(403);
+    expect((await local("GET", `/api/threads/${threadId}/messages`)).status).toBe(200);
+
+    const pairing = await local("POST", "/api/auth/pairing", { label: "Verification device" });
+    expect(pairing.status).toBe(200);
+    const paired = await raw(url, "/api/auth/pair", { "content-type": "application/json" }, "POST",
+      JSON.stringify({ code: pairing.body.code, label: "Verification device" }));
+    expect(paired.status).toBe(200);
+    expect((await raw(url, `/api/threads/${threadId}/messages`, { authorization: `Bearer ${JSON.parse(paired.body).token}` })).status).toBe(200);
+
+    const health = await raw(url, "/api/health", {});
+    expect(health.status).toBe(200);
+    expect(JSON.parse(health.body)).toMatchObject({ app: "openmausbot", pid: expect.any(Number) });
+    expect((await raw(url, "/api/brand", {})).status).toBe(200);
+    expect((await raw(url, "/api/internal/agents", {})).status).toBe(401);
+  } finally {
+    await fixture.close();
+  }
+}, 60_000);

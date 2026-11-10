@@ -7,7 +7,7 @@ import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import { useStore, type Bot } from "@/state/store";
-import type { ApprovalMode } from "../../../shared/approval-mode";
+import { approvalModeAllowed, type ApprovalMode } from "../../../shared/approval-mode";
 import { DEFAULT_OUTBOUND_POLICY, type OutboundPolicy } from "../../../shared/outbound";
 import { ApprovalModeSelector } from "../ApprovalModeSelector";
 import { CommandAllowlistDialog } from "../CommandAllowlistDialog";
@@ -17,6 +17,7 @@ import { ManagedTeamsSettings } from "./ManagedTeamsSettings";
 import { ProposalStatus } from "./ProposalStatus";
 import type { useBotSettingsDerived } from "./useBotSettingsDerived";
 import { useBotEditor } from "./BotEditorContext";
+import { BotApprovalCeiling } from "./BotApprovalCeiling";
 
 export type PermissionsPart = "chief" | "peers" | "approval" | "outbound";
 
@@ -41,7 +42,7 @@ export function PermissionsSection({
   const applyFullEverywhere = () =>
     dispatch({ type: "updateBot", botId: bot.id, patch: { approvalMode: "full", applyToAllThreads: true } });
   const setApprovalMode = (mode: ApprovalMode) => {
-    if (mode === approvalMode) return;
+    if (mode === approvalMode || !approvalModeAllowed(mode, bot.approvalCeiling)) return;
     if (mode === "full") {
       applyFullEverywhere();
       return;
@@ -129,6 +130,7 @@ export function PermissionsSection({
           onOpen={() => patch({ peers: null, acknowledgePeerScope: true })} />}
       </div>}
 
+      {!draft && shows("approval") && <BotApprovalCeiling key={bot.id} bot={bot} />}
       {shows("approval") && <div className="rounded-xl bg-card p-4">
         <div className="text-[15px] font-medium text-ink">{t("permissions.approval.title")}</div>
         <div className="mt-0.5 text-[13px] text-ink-secondary">
@@ -139,6 +141,7 @@ export function PermissionsSection({
           <ApprovalModeSelector
             approvalMode={bot.approvalMode}
             autoApprove={bot.autoApprove}
+            approvalCeiling={bot.approvalCeiling}
             providerName={engine?.displayName ?? bot.name}
             driverKind={engine?.driverKind ?? ""}
             onSelect={setApprovalMode}

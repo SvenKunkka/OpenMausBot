@@ -9,9 +9,9 @@ export function EmptyChat({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
   const advanced = useAdvancedMode();
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 py-24 text-center">
+    <div data-workspace-empty className="flex flex-1 flex-col items-center justify-center gap-3 py-24 text-center">
       <BotAvatar bot={bot} state="idle" size={64} motion="none" motionKey={0} />
-      {!advanced ? <div className="text-[17px] font-semibold text-ink">{bot.name}</div> : <RenameTitle
+      {!advanced ? <h1 className="text-[clamp(24px,4vw,34px)] font-semibold leading-tight tracking-[-0.04em] text-ink">{bot.name}</h1> : <RenameTitle
         value={bot.name}
         onCommit={(name) => {
           if (window.ogb?.remoteClient?.active) {

@@ -36,8 +36,10 @@ import { assistantTranscript, errorTranscript } from "../shared/client-cancel.ts
 import { phonePairingLink } from "../shared/pairing-link.ts"; import { personTagNames, withoutPersonTags } from "../shared/person-mention.ts";
 import { canWorkOnCloud, type CloudEngine } from "../shared/cloud-computer.ts";
 import {
+  approvalModeAllowed,
   approvalModeFor,
   modelSwitchNeedsAsk,
+  threadApproval,
   isEmergencyApprovalDowngrade,
   isApprovalMode, setDefaultApprovalMode,
   type ApprovalMode,
@@ -2903,11 +2905,14 @@ if (browserCleanupReferencesReconciled) browserCleanup.startPending();
 
 let threadsAwaitingTeammates = (): ReadonlySet<string> => new Set<string>();
 let cacheKeepWarmStatus = (_threadId: string): KeepWarmStatus | undefined => undefined;
-const wireTask = (task: TaskRecord, botModel: ModelSelection, awaiting = threadsAwaitingTeammates()): WireTask => {
+const wireTask = (task: TaskRecord, botModel: ModelSelection, awaiting = threadsAwaitingTeammates(), bot = store.botByThread(task.threadId)): WireTask => {
   // Snoozes heal on read against the server clock; the 0 sentinel ("until new activity") survives reads.
   const { snoozedUntil, ...base } = toWireTask(task, botModel);
+  const approvalMode = approvalModeFor({
+    ...threadApproval(task, bot ?? {}), approvalCeiling: bot?.approvalCeiling, approvalGrant: bot?.approvalGrant, threadId: task.threadId,
+  });
   const keepWarm = cacheKeepWarmStatus(task.threadId);
-  const coordinated = { ...base, waitingForTeammates: awaiting.has(task.threadId) && !task.busy, ...(keepWarm ? { cacheKeepWarm: keepWarm } : {}), ...(teamHost.ownTurn(task.threadId) ? { private: true as const } : {}), ...teamMessages.inbox.wire(task.threadId) };
+  const coordinated = { ...base, approvalMode, autoApprove: approvalMode === "auto", waitingForTeammates: awaiting.has(task.threadId) && !task.busy, ...(keepWarm ? { cacheKeepWarm: keepWarm } : {}), ...(teamHost.ownTurn(task.threadId) ? { private: true as const } : {}), ...teamMessages.inbox.wire(task.threadId) };
   const asleep = snoozedUntil === 0 || (snoozedUntil !== undefined && snoozedUntil > Date.now());
   return asleep ? { ...coordinated, snoozedUntil } : coordinated;
 };
@@ -2916,13 +2921,15 @@ const wireTask = (task: TaskRecord, botModel: ModelSelection, awaiting = threads
 const wireBot = (bot: BotRecord): WireBot => {
   const { resumeCursors: _resumeCursors, tasks, approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, mainThreadChoice: _mainThreadChoice, ...rest } = bot;
   // Clients see Ask while an elevated grant awaits the desktop's confirmation, never a grant that may still roll back.
-  const visible = approvalGrant && !approvalGrant.threadOnly
-    ? { ...rest, approvalMode: "ask" as const, autoApprove: false }
-    : { ...rest, approvalMode: approvalModeFor(rest) };
+  const approvalMode = approvalModeFor({ ...rest, approvalGrant: approvalGrant?.threadOnly ? undefined : approvalGrant });
+  const visible = {
+    ...rest, approvalMode,
+    ...(rest.autoApprove !== undefined || (approvalGrant && !approvalGrant.threadOnly) ? { autoApprove: approvalMode === "auto" } : {}),
+  };
   const awaiting = threadsAwaitingTeammates();
   return { ...visible, waitingForTeammates: awaiting.has(bot.threadId) && !threadBusy(bot.id, bot.threadId),
     mainThreadId: botMainThread(bot.id),
-    avatarUrl: visible.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection, awaiting)) } : {}) };
+    avatarUrl: visible.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection, awaiting, bot)) } : {}) };
 };
 
 function toolScopeForTurn(botId: string) {
@@ -2936,7 +2943,8 @@ function toolScopeForTurn(botId: string) {
 const wireTrustedApprovalBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
   const { resumeCursors: _resumeCursors, tasks, approvalGrant: _approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, mainThreadChoice: _mainThreadChoice, ...rest } = bot;
   const awaiting = threadsAwaitingTeammates();
-  return { ...rest, approvalMode: approvalModeFor(rest), mainThreadId: botMainThread(bot.id), avatarUrl: rest.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection, awaiting)) } : {}) };
+  const approvalMode = approvalModeFor(rest);
+  return { ...rest, approvalMode, ...(rest.autoApprove !== undefined ? { autoApprove: approvalMode === "auto" } : {}), mainThreadId: botMainThread(bot.id), avatarUrl: rest.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection, awaiting, bot)) } : {}) };
 };
 
 function previewSystemPrompt(bot: BotRecord) {
@@ -3078,7 +3086,8 @@ async function botOverview(bot: BotRecord): Promise<BotOverview> {
 const approvalModeForTurn = (bot: BotRecord, peerInitiated = false, threadId = bot.threadId): ApprovalMode => {
   // Judged by the conversation the turn runs in, never whichever of the bot's conversations is active.
   if (cloudGuestDriven(threadId) || botApiThread(threadId) || proactive.fence.confines(threadId)) return "ask";
-  const mode = approvalModeForOrigin(approvalModeFor(bot), { peerInitiated });
+  const approvalCeiling = store.bot(bot.id)?.approvalCeiling ?? bot.approvalCeiling;
+  const mode = approvalModeForOrigin(approvalModeFor({ ...bot, approvalCeiling }), { peerInitiated });
   if (!supportsApprovalMode(bot.modelSelection, mode)) {
     return "ask";
   }
@@ -3124,8 +3133,8 @@ function handleDesktopTrustedApprovalMessage(raw: unknown): boolean {
   const message = raw as Record<string, unknown>;
   const grantTarget = (bot: BotRecord) => bot.approvalGrant?.threadOnly
     ? store.projectBotForTask(bot.id, bot.approvalGrant.threadId!) : bot;
-  const grantSupported = (bot: BotRecord, mode: ApprovalMode) => supportsApprovalMode(
-    grantTarget(bot)?.modelSelection, mode) &&
+  const grantSupported = (bot: BotRecord, mode: ApprovalMode) => approvalModeAllowed(mode, bot.approvalCeiling) &&
+    supportsApprovalMode(grantTarget(bot)?.modelSelection, mode) &&
     (!bot.approvalGrant?.allThreads || store.tasks(bot.id).every(task => supportsApprovalMode(
       task.modelSelection ?? bot.modelSelection, mode)));
   const clearGrant = (bot: BotRecord) => store.patchBot(bot.id, {
@@ -3335,6 +3344,10 @@ function handleDesktopTrustedApprovalMessage(raw: unknown): boolean {
     respond({ ok: false, error: "No such bot" });
     return true;
   }
+  if (!approvalModeAllowed(mode, existing.approvalCeiling)) {
+    respond({ ok: false, error: "This approval mode exceeds the bot's approval ceiling." });
+    return true;
+  }
   const currentMode = approvalModeFor(existing);
   const threadId = message.threadId;
   if (message.allThreads !== undefined && (typeof message.allThreads !== "boolean" ||
@@ -3515,7 +3528,7 @@ const storedAvatarExists = (avatarUrl: string): boolean =>
 
 const publicBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
   const wired = wireBot(bot), tasks = store.tasks(bot.id);
-  return { ...wired, ...messagePage(bot.threadId, DEFAULT_PAGE), tasks: tasks === bot.tasks && wired.tasks ? wired.tasks : tasks.map((task) => wireTask(task, bot.modelSelection)) };
+  return { ...wired, ...messagePage(bot.threadId, DEFAULT_PAGE), tasks: tasks === bot.tasks && wired.tasks ? wired.tasks : tasks.map((task) => wireTask(task, bot.modelSelection, undefined, bot)) };
 };
 const publicBotQueuedMessages = () => queuedSteerSnapshot((botId, threadId) => Boolean(store.taskByThread(botId, threadId)), waitWords.queued);
 
@@ -12113,6 +12126,7 @@ ROUTES.push(createSharedComputerRoutes({ enabled: (auth) => lendingEnabled() || 
 ROUTES.push(createBotMessageRoutes({
   store, registry, handoffs, liveTurn: (threadId) => liveTurns.running(threadId), phoneSecretSubmissions, directTurnDispatchClaims, groupSpeakers,
   routines: () => routines,
+  hasRememberedCommands: (botId) => commandAllowlist.list(botId).length > 0,
   fromPhone: phones.fromPhone, notePhoneSend: phones.noteSend,
   desktopManaged: DESKTOP_MANAGED, cloudHome: Boolean(CLOUD_HOME), DirectSendRefused,
   acceptDirectSend, directSendRefusal, startTurn, usageTriggerFor, messageSender, cloudGuestSendRefusal, cloudThreadRefusal, resolveAccessRequest: (threadId, requestId, behavior, message) => lendingLifts?.resolve(threadId, requestId, behavior) ?? accessRequests.resolve(threadId, requestId, behavior, message), relayRefusal: CLOUD_TEAM ? (bot, email) => relayedSendRefusal(bot, email, Boolean(email && teamOwners.people?.list().some((one) => one.email === email && one.role !== "member"))) : undefined,

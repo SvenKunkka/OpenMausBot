@@ -351,17 +351,17 @@ const reachForComputer = async () => {
   }).catch(() => undefined);
 };
 
-const readJsonFileWhenReady = async <T = unknown>(file: string, timeout = 5_000): Promise<T> => {
-  let parsed: unknown;
+const readJsonFileWhenReady = async <T = unknown>(file: string, timeout = 5_000, matches: (value: T) => boolean = () => true): Promise<T> => {
+  let parsed: T;
   await expect.poll(() => {
     try {
-      parsed = JSON.parse(readFileSync(file, "utf8"));
-      return true;
+      parsed = JSON.parse(readFileSync(file, "utf8")) as T;
+      return matches(parsed);
     } catch {
       return false;
     }
   }, { timeout }).toBe(true);
-  return parsed as T;
+  return parsed!;
 };
 
 const storedMessageCount = (threadId: string): number => {
@@ -6033,6 +6033,7 @@ describe("harness HTTP API", () => {
       },
     });
     expect(scout).not.toHaveProperty("autoApprove");
+    expect(scout.approvalMode).toBe("ask");
     const importedSkills = await api("GET", `/api/bots/${scout.id}/skills`);
     expect(importedSkills.body.skills).toMatchObject([{
       name: "source-check",
@@ -6168,6 +6169,7 @@ describe("harness HTTP API", () => {
     expect(impostor.threadId).not.toBe(trusted.threadId);
     expect(impostor.name).toBe("Mira 2");
     expect(impostor.autoApprove).toBeUndefined();
+    expect(impostor.approvalMode).toBe("ask");
     expect(impostor.alwaysAllow).toBeUndefined();
     expect(impostor.chiefOfStaff).toBeUndefined();
     expect(impostor.approvePeerComms).toBeUndefined();
@@ -7721,12 +7723,12 @@ describe("harness HTTP API", () => {
     try {
       for (const title of ["New thread one", "New thread two"]) {
         const task = (await api("POST", `/api/bots/${bot.id}/tasks`, { title })).body.task;
-        expect(task.approvalMode).toBe("full");
+        expect(task.approvalMode).toBe("ask");
         opened.push(task.threadId);
       }
       const panel = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto" });
       expect(panel.status).toBe(200);
-      expect(levels(panel.body.bot)).toEqual(["auto", "full", "full"]);
+      expect(levels(panel.body.bot)).toEqual(["auto", "ask", "ask"]);
 
       expect((await api("PATCH", `/api/bots/${bot.id}`, { applyToAllThreads: true })).status).toBe(400);
       expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto", applyToAllThreads: "yes" })).status).toBe(400);
@@ -7751,7 +7753,7 @@ describe("harness HTTP API", () => {
     const bot = (await api("POST", "/api/bots")).body.bot;
     try {
       const opened = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: "New thread" })).body.task;
-      expect(opened.approvalMode).toBe("full");
+      expect(opened.approvalMode).toBe("ask");
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "local", approvalMode: "auto", acknowledgeLocalAuto: true })).status).toBe(200);
       const blind = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto", applyToAllThreads: true });
       expect(blind.status).toBe(400);
@@ -8440,8 +8442,9 @@ describe("harness HTTP API", () => {
       boatPromptBodies.length = 0;
       rmSync(fakeClaudeDump, { force: true });
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "Describe your available computer tools" })).status).toBe(202);
-      type Dump = { argv: string[]; mcpConfig: { mcpServers: Record<string, { args?: string[] }> }; systemPrompt: string };
-      const local = await readJsonFileWhenReady<Dump>(fakeClaudeDump);
+      type Dump = { argv: string[]; mcpConfig: { mcpServers: Record<string, { args?: string[] }> }; systemPrompt: string; prompt: unknown };
+      const prompted = (text: string) => (dump: Dump) => JSON.stringify(dump.prompt)?.includes(text) === true;
+      const local = await readJsonFileWhenReady<Dump>(fakeClaudeDump, 5_000, prompted("Describe your available computer tools"));
       expect(local.mcpConfig.mcpServers.computer).toBeUndefined();
       expect(boatPromptBodies).toHaveLength(0);
       expect(boatRouteCalls).toEqual([]);
@@ -8460,11 +8463,12 @@ describe("harness HTTP API", () => {
       expect((await api("GET", `/api/bots/${bot.id}/computer?threadId=${bot.threadId}`)).body.surface).toBe("vm");
       expect((await api("POST", `/api/bots/${bot.id}/computer/join?threadId=${bot.threadId}`, {})).status).toBe(409);
 
-      await api("PATCH", `/api/bots/${bot.id}`, { computer: "vm" });
-      await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, { surface: "cloud" });
+      expect(await api("PATCH", `/api/bots/${bot.id}`, { computer: "vm" })).toMatchObject({ status: 200 });
+      expect(await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, { surface: "cloud" }))
+        .toMatchObject({ status: 200, body: { task: { surface: "cloud" } } });
       rmSync(fakeClaudeDump, { force: true });
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "Open Chrome on the cloud VM" })).status).toBe(202);
-      const pinnedCloud = await readJsonFileWhenReady<Dump>(fakeClaudeDump, 10_000);
+      const pinnedCloud = await readJsonFileWhenReady<Dump>(fakeClaudeDump, 10_000, prompted("Open Chrome on the cloud VM"));
       expect(pinnedCloud.argv[pinnedCloud.argv.indexOf("--model") + 1]).toBe("claude-sonnet-5");
       expect(pinnedCloud.mcpConfig.mcpServers.computer?.args).toEqual([expect.stringMatching(/harness-mcp-proxy\.(?:ts|js)$/), "computer"]);
       expect(pinnedCloud.systemPrompt).toContain("assigned cloud computer");
@@ -13809,10 +13813,12 @@ describe("bot memory API", () => {
       expect(fresh.status).toBe(200);
       expect(fresh.body.who.name).toBe("Kiwi");
       expect(fresh.body.wont).toEqual([
+        "Command approvals use Ask mode; saved permissions and provider rules still apply.",
         "Cannot initiate contact with other bots.",
         "Has no connected apps.",
         "Can't use a computer.",
         "Won't act on a schedule.",
+        "Profile proposal cards require your approval.",
       ]);
       expect(fresh.body.recent).toEqual([]);
 

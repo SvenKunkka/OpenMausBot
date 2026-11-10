@@ -10,7 +10,7 @@ import { fishListeningReady, listensHere, speechBridge } from "@/lib/speech";
 import { requestNotificationPermission } from "@/lib/notify";
 import { firstSentence } from "@/lib/soul";
 import { currentTaskBot, useStore, type Bot } from "@/state/store";
-import type { ApprovalMode } from "../../../shared/approval-mode";
+import { approvalModeAllowed, type ApprovalMode } from "../../../shared/approval-mode";
 import { BOT_PROFILE_LIMITS } from "../../../shared/bot-profile";
 import { REPLY_STYLES, type ReplyStyle } from "../../../shared/reply-style";
 import { ApprovalChip } from "../ComposerPlusMenu";
@@ -68,13 +68,13 @@ export function SettingsPage({ bot, derived, onOpen, editingInstructions = false
   const displayedMode: ApprovalMode = engine?.driverKind === "antigravityAgent" && approvalMode === "auto" ? "ask" : approvalMode;
   const actsOptions: SegmentOption<ApprovalMode>[] = [
     { value: "ask", label: ACTS_LABEL.ask(), tooltip: t("botSettings.simple.askHint") },
-    { value: "full", label: ACTS_LABEL.full(), tooltip: t("botSettings.simple.fullHint") },
+    { value: "full", label: ACTS_LABEL.full(), disabled: !approvalModeAllowed("full", bot.approvalCeiling), tooltip: t("botSettings.simple.fullHint") },
     ...(displayedMode === "ask" || displayedMode === "full"
       ? []
       : [{ value: displayedMode, label: ACTS_LABEL[displayedMode](), disabled: true, tooltip: displayedMode === "custom" ? t("botPanel.acts.customHint") : undefined }]),
   ];
   const chooseActs = (mode: ApprovalMode) => {
-    if (mode === approvalMode || (mode !== "ask" && mode !== "full")) return;
+    if (mode === approvalMode || (mode !== "ask" && mode !== "full") || !approvalModeAllowed(mode, bot.approvalCeiling)) return;
     dispatch({ type: "updateBot", botId: bot.id, patch: { approvalMode: mode, applyToAllThreads: true } });
   };
 

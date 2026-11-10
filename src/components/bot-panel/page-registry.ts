@@ -19,7 +19,7 @@ export type PageId =
   | "overview" | "prompt" | "history";
 
 /** The pages Simple mode draws; a link to any other page lands where its section does. */
-export const SIMPLE_PAGES = ["settings", "apps", "routines", "visibility", "memory", "skills", "folder", "browser", "where"] as const satisfies readonly PageId[];
+export const SIMPLE_PAGES = ["settings", "approvals", "apps", "routines", "visibility", "memory", "skills", "folder", "browser", "where"] as const satisfies readonly PageId[];
 export type SimplePageId = (typeof SIMPLE_PAGES)[number];
 
 export function isSimplePage(page: PageId): page is SimplePageId {
@@ -38,7 +38,7 @@ export const PAGES: Record<PageId, PageMeta> = {
   setup: { title: "botSetup.ideas", home: "details" },
   model: { title: "model.simple.model", home: "details" },
   instructions: { title: "botSettings.simple.instructions", home: "details" },
-  approvals: { title: "botPanel.page.approvals", home: "details" },
+  approvals: { title: "permissions.center.title", home: "details", intro: "permissions.center.intro" },
   routines: { title: "botSettings.simple.routines", home: "details" },
   apps: { title: "botPanel.appsRow", home: "details", intro: "botPanel.apps.intro" },
   memory: { title: "botPanel.memoryRow", home: "library", intro: "botPanel.memory.intro" },

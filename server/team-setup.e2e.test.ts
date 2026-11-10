@@ -70,7 +70,7 @@ it("Clive sets up multi-provider teams at Ask with no card, keeps existing threa
     const created = saved.filter((bot: any) => !initialBotIds.has(bot.id));
     expect(created.map((bot: any) => bot.name).sort()).toEqual(["Mira", "Patch", "Quill"]);
     const engineer = created.find((bot: any) => bot.name === "Patch");
-    expect(engineer).toMatchObject({ title: "Implementation and verification engineer", section: "Engineering", chiefOfStaff: true, modelSelection: selection(codex), approvalMode: "full", autoApprove: false });
+    expect(engineer).toMatchObject({ title: "Implementation and verification engineer", section: "Engineering", chiefOfStaff: true, modelSelection: selection(codex), approvalMode: "ask", autoApprove: false });
     for (const bot of created) expect(bot.connectorTools, bot.name).toEqual({ slack: { tools: ["SLACK_SEND_MESSAGE"] } });
     expect(engineer.managedSections).toBeUndefined();
     expect(saved.find((bot: any) => bot.id === chief.id).managedSections).toEqual(expect.arrayContaining(plan.newTeams));
@@ -109,7 +109,7 @@ it("Clive sets up multi-provider teams at Ask with no card, keeps existing threa
     token = await start("Does the team need anyone else?");
     const picked = await api("POST", "/api/internal/create-bot", { name: "Scout", role: "Research scout", instructions: "Find and check sources.", suggestion: true }, 201, token);
     expect(picked).toMatchObject({ state: "applied", applied: true, name: "Scout" });
-    expect((await state()).find((bot: any) => bot.name === "Scout")).toMatchObject({ approvalMode: "full" });
+    expect((await state()).find((bot: any) => bot.name === "Scout")).toMatchObject({ approvalMode: "ask" });
     await finish();
     expect(await decisionReplies(picked.requestId)).toBe(0);
     expect(await api("POST", `/api/threads/${chief.threadId}/undo`, { requestId: picked.requestId })).toEqual({ ok: true, undone: true });

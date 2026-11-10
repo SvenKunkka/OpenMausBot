@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { FileText, FolderOpen, Plus, Server } from "lucide-react";
+import { AppWindow, FileText, FolderOpen, Monitor, Plus, Server } from "lucide-react";
 
 import { appSwitchPatch } from "@/lib/bot-app-access";
 import { cn } from "@/lib/cn";
@@ -12,9 +12,12 @@ import type { Routine } from "@/lib/routines";
 import type { SkillImportSummary } from "../../../shared/skill-import";
 import { shortPath } from "@/lib/short-path";
 import { skillImportLines } from "@/lib/skill-import";
-import { useStore, type Bot } from "@/state/store";
+import { currentTaskBot, useStore, type Bot } from "@/state/store";
 import { useDesktopCapabilities } from "../DesktopCapabilities";
 import { ServiceIcon } from "../ServiceIcon";
+import { ApprovalModeSelector } from "../ApprovalModeSelector";
+import { PermissionsSection } from "../bot-settings/PermissionsSection";
+import { useThreadApproval } from "../thread-approval";
 import { RoutineEditor } from "../RoutinesPage";
 import { useWorkingFolder } from "../bot-settings/AccessSection";
 import { useBotEditor } from "../bot-settings/BotEditorContext";
@@ -547,6 +550,30 @@ function VisibilityPage({ bot }: PageContext) {
   return useChoosesVisibility() ? <VisibilitySection bot={bot} /> : null;
 }
 
+function ApprovalsPage({ bot, derived, onOpen }: PageContext & { onOpen?: (page: SimplePageId) => void }) {
+  const { choice, dialogs } = useThreadApproval(currentTaskBot(bot));
+  return (
+    <>
+      <PermissionsSection bot={bot} derived={derived} parts={["approval", "outbound"]} />
+      {choice && (
+        <Card label={t("botPanel.thisConversation")}>
+          <ColRow>
+            <ApprovalModeSelector {...choice} menuDirection="down" wide />
+          </ColRow>
+        </Card>
+      )}
+      {onOpen && (
+        <Card label={t("permissions.center.resources")}>
+          <LinkRow icon={AppWindow} onClick={() => onOpen("apps")}>{t("botPanel.appsRow")}</LinkRow>
+          <LinkRow icon={Monitor} onClick={() => onOpen("where")}>{t("computer.simple.whereWorks", { name: bot.name })}</LinkRow>
+          <LinkRow icon={FolderOpen} onClick={() => onOpen("folder")}>{t("computer.files.folder")}</LinkRow>
+        </Card>
+      )}
+      {dialogs}
+    </>
+  );
+}
+
 export function PageBody({ page, onOpen, editingInstructions, onEditInstructions, ...context }: PageContext & {
   page: SimplePageId;
   onOpen?: (page: SimplePageId) => void;
@@ -556,6 +583,8 @@ export function PageBody({ page, onOpen, editingInstructions, onEditInstructions
   switch (page) {
     case "settings":
       return <SettingsPage {...context} onOpen={onOpen} editingInstructions={editingInstructions} onEditInstructions={onEditInstructions} />;
+    case "approvals":
+      return <ApprovalsPage {...context} onOpen={onOpen} />;
     case "where":
       return <WherePage {...context} />;
     case "apps":

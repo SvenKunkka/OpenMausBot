@@ -148,7 +148,8 @@ export function attachUpdaterWindow(mainWindow) {
 
 /** `signals` (quietSignals): what tells a quiet moment; without them a downloaded update installs only on Restart or quit. */
 export function startUpdater(signals = null) {
-  if (!app.isPackaged) {
+  // The private Workbench build has no public update feed.
+  if (!app.isPackaged || /-workbench\./.test(app.getVersion())) {
     updaterCoordinator = null;
     setState({ status: "idle" });
     return;

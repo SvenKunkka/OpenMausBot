@@ -975,6 +975,22 @@ describe("default fleet", () => {
     expect(map.codex.environment).toEqual({});
   });
 
+  it("offers local Codex on desktops with an older custom-only fleet", () => {
+    const cfg: AppConfig = { instances: { mockrelay: { driver: "grok", enabled: true } } };
+
+    expect(Object.keys(instanceConfigs(cfg, true))).toEqual(["mockrelay", "codex-local"]);
+    expect(instanceConfigs(cfg, true)["codex-local"]).toMatchObject({ driver: "codex" });
+    expect(Object.keys(instanceConfigs(cfg, false))).toEqual(["mockrelay"]);
+    expect(Object.keys(cfg.instances!)).toEqual(["mockrelay"]);
+  });
+
+  it("respects an explicitly configured Codex engine on desktop", () => {
+    const cfg: AppConfig = { instances: { dedicated: { driver: "codex", enabled: false } } };
+
+    expect(Object.keys(instanceConfigs(cfg, true))).toEqual(["dedicated"]);
+    expect(instanceConfigs(cfg, true).dedicated.enabled).toBe(false);
+  });
+
   it("adds a separate ChatGPT plan account without copying Codex credentials", () => {
     const cfg: AppConfig = { instances: { codex: { driver: "codex", config: { cli: "/fixture/codex" }, environment: { CODEX_HOME: "/other-account", OPENAI_API_KEY: "not-for-plan" } } } };
     expect(instanceConfigs(cfg).chatgpt).toMatchObject({ driver: "codex", displayName: "ChatGPT plan", config: { cli: "/fixture/codex", authMode: "chatgpt-plan" }, environment: {} });

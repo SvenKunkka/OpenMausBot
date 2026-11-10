@@ -5,8 +5,8 @@ closet). Then connect the desktop app, browsers and phones to it. Every path
 below ends the same way: the server prints **one link**, and you paste it into
 MausBot under **＋ → Connect to a server**.
 
-> **Security first:** the server listens on `127.0.0.1:8799`, and a program on
-> that machine counts as its owner. Never forward that port yourself. Let one
+> **Security first:** the server listens on `127.0.0.1:8799` by default, and a
+> bundled server gives local programs only service access. Never forward that port yourself. Let one
 > of the ways in below reach it: `--public-url`, `--domain`, `--tunnel`,
 > `--tailscale` or `--lan`. Every device that comes in through one of them has
 > to pair. If several people share one server, read
@@ -635,9 +635,9 @@ also stops sharing and signs this desktop out, without deleting the server's
 bots or conversations. If sign-out cannot reach the server, the app warns you;
 revoke its session there when reachable again, or if the device is gone.
 
-What this changes about the trust model: the server still binds loopback
-and still trusts programs on loopback as the owner, though never a browser
-(below). A **paired session** is the second way in: a bearer token or the cookie, same-origin only, with a scope (`admin`
+The server still binds loopback by default. The bundled server gives local
+programs service access, and a browser must sign in. A **paired session** uses
+a bearer token or the same-origin cookie, with a scope (`admin`
 by default, `--phone` for a device that may chat but not change settings or
 pair others). Five wrong codes in five minutes from one address lock that
 address out for five minutes ("Too many wrong codes. Try again at 11:19.").
@@ -667,7 +667,7 @@ address of its own:
 
 ```sh
 ssh -L 8799:localhost:8799 you@your-server
-# then run `openmausbot pair` on the server and open the "Browser on this machine" link it prints
+# open the pairing link printed by the interactive `openmausbot serve` on the server
 ```
 
 The browser signs in once through the tunnel, like any browser on the server
@@ -683,8 +683,8 @@ server, even when it runs on the same machine. Programs are unaffected: the
 CLI, scripts, `curl` and the companion send neither header.
 
 So the first time you open the web UI in a browser on the server's own
-machine, it shows the sign-in page. With no way in, `openmausbot pair` prints
-a link for it:
+machine, it shows the sign-in page. An interactive `openmausbot serve` prints
+a pairing link:
 
 ```
   Browser on this machine     http://127.0.0.1:8799/pair#code=XXXX-XXXX-XXXX
@@ -713,30 +713,29 @@ webhooks as the owner. The server therefore decides at start-up how far a
 loopback request **without a session** is trusted, and logs it:
 
 ```
-local requests: owner trust (self-hosted default)
+local requests: service trust (self-hosted default)
 local requests: service trust (hosted workspace); without a session, loopback may use only health, the Slack worker's guarded routes and bot capability routes
 ```
 
 | Trust | Default for | A session-less loopback request may |
 |---|---|---|
-| `owner` | a self-hosted server, the desktop app | do everything, as today |
-| `service` | a hosted workspace: any of `OMB_ADMIN_URL`, `OMB_ADMIN_WORKSPACE` or `OMB_ADMIN_MEMBERSHIP` set (shared-workspace Full access only works there, so it is covered too) | read health, who-am-I, the bot list, a thread's messages and a bot's picture; open a thread; send through the guarded route; watch and stop its exact request; withdraw a queued line; **decline** a card; use the bots' own capability routes (`/api/internal/*`, which check their own per-turn token) |
+| `owner` | an unbundled source development server, the packaged desktop (with its private capability) | administer the workspace |
+| `service` | a bundled standalone server or a hosted workspace | read health, who-am-I, the bot list, a thread's messages and a bot's picture; open an Ask thread; send to a guarded Ask thread without remembered tool grants; watch and stop its exact request; withdraw a queued line; **decline** a card; use the bots' own capability routes (`/api/internal/*`, which check their own per-turn token) |
 
 Under `service`, everything else from loopback needs a real session and
 answers 403: settings and keys (`/api/config`), instances, MCP servers,
 webhooks, sessions and pairing, people and sign-in lists, usage, budgets,
 the decision log, fleet, workspace backups, creating or loosening bots, and
-approving or answering any card. The Slack worker (the only session-less
-local caller a hosted workspace has) needs nothing more and keeps working
-unchanged. Sessions — a portal sign-in, an email sign-in or a pairing — work
-exactly as before, with their own scopes.
+approving or answering any card. A service caller cannot open a Full-access
+thread or start a guarded Full-access turn. Slack workers can use guarded Ask
+requests. Portal, email and paired sessions use their own scopes.
 
-Set `OMB_LOOPBACK_TRUST=service` on a self-hosted server people share (with
-an email sign-in list, say), or `OMB_LOOPBACK_TRUST=owner` to opt a hosted
-workspace back into the old behaviour (the log then warns). Any other value
-means `service`. The desktop app ignores the setting: its local changes
-already need the app's own per-launch capability. MausBot Cloud ignores
-it too and is always `service` (docs/cloud-pro.md).
+Set `OMB_LOOPBACK_TRUST=service` when running a source checkout outside
+development. Set `OMB_LOOPBACK_TRUST=owner` only for an intentional trusted
+local integration, since any process that can reach the API would act as an
+administrator. An unrecognized value selects service trust. The desktop
+uses its private capability for workspace reads and writes, and MausBot
+Cloud always uses service trust.
 
 With `service` on a self-hosted server:
 
@@ -754,20 +753,10 @@ With `service` on a self-hosted server:
 - A browser on an SSH tunnel gets the sign-in page instead of the app.
 - The MCP server script works with `OPENMAUSBOT_TOKEN` set to a paired session.
 
-**What `service` does not close yet.** Any bot's shell can still do
-everything the Slack worker does, and on a shared workspace that is a real
-gap: it can post into any bot's thread through the guarded route, including
-an existing Full-access thread (`expectedApprovalMode: "full"`), and while
-shared Full access is on it can open new Full-access threads. Either way the
-work runs with Full access and no card, so a user who can talk to a bot
-can get Full access through it. It can also stop a request and decline a
-card. It cannot approve a card, change settings, keys, people or sessions,
-or loosen a bot's permissions. The planned fix is a relay token that only
-the Slack worker holds, so these routes stop answering session-less loopback
-at all; until then, turn shared Full access on only where every user may
-have Full access. Files the server's user owns (`config.json`, the engine's
-environment) are also still readable from a bot's shell; that needs a
-second user for engines, a separate change.
+**Service access boundary.** A bot shell and the Slack worker share the
+service routes. A process in that namespace can read through those routes,
+send guarded Ask requests, stop a request and decline a card. File permissions
+and engine isolation determine which files the bot can read directly.
 
 ## Sign in with your email
 

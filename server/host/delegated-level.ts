@@ -47,7 +47,8 @@ export function createDelegatedLevel(deps: DelegatedLevelDeps) {
     const chiefMode = deps.sourceLevel(above.chief.id, above.threadId);
     const level = delegatedApprovalMode({
       senderIsChief: true, senderMode: chiefMode, sameBot: from.botId === target.id || above.chief.id === target.id,
-      recipientMode: own, recipientDriverKind: deps.driverKind(target),
+      recipientMode: own, recipientCeiling: store.bot(target.id)?.approvalCeiling ?? target.approvalCeiling,
+      recipientDriverKind: deps.driverKind(target),
     });
     return level ? { level, chief: above.chief, chiefMode } : null;
   }
@@ -61,10 +62,11 @@ export function createDelegatedLevel(deps: DelegatedLevelDeps) {
     store.patchTask(target.id, threadId, { approvalMode: passed.level, autoApprove: false, alwaysAllow: [] });
     const name = NAMES[passed.level] ?? passed.level;
     const via = passed.chief.id === from.id ? "" : `from ${passed.chief.name}, `;
+    const chiefMode = NAMES[passed.chiefMode] ?? passed.chiefMode;
     store.appendMessage(threadId, {
       role: "bot",
       kind: "activity",
-      tool: { name: `${name} — handed on by ${from.name}, ${via}a Chief of Staff on ${name}`, ok: true },
+      tool: { name: `${name} — handed on by ${from.name}, ${via}a Chief of Staff on ${chiefMode}`, ok: true },
     });
   }
 
@@ -83,7 +85,9 @@ export function createDelegatedLevel(deps: DelegatedLevelDeps) {
     const running = store.projectBotForTask(bot.id, target.threadId) ?? bot;
     const level = target.groupId ? roomTurn(bot, target.threadId, source) : deps.turnLevel(running, true, target.threadId);
     const passed = handedDown(source, bot, "ask");
-    return { level, ...(passed?.level === level ? { chief: passed.chiefMode } : {}), driverKind: deps.driverKind(running) };
+    const chief = passed?.level === level ? passed.chiefMode : undefined;
+    const cap = bot.approvalCeiling;
+    return { level, ...(chief !== undefined && (cap === undefined || chief === level) ? { chief } : {}), driverKind: deps.driverKind(running) };
   }
 
   return { apply, roomTurn, levelOf };

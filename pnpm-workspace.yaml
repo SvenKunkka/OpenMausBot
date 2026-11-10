@@ -24,3 +24,4 @@ onlyBuiltDependencies:
 overrides:
   dompurify: 3.4.17
   fast-uri: 3.1.9
+  source-map-js: 1.2.2

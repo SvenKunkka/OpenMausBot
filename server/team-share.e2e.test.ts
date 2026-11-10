@@ -82,7 +82,7 @@ it("shares one team whole (minus chat history) and imports it back as new, inert
     expect(copyLead).toMatchObject({ chiefOfStaff: true, mcpServers: ["crm-2"], installedPackage: { id: "sales-desk", source: "file", agentKey: "morgan" } });
     expect(copyLead.installedPackage).not.toHaveProperty("publisher");
     expect(copyLead.avatarUrl).toMatch(/^\/api\/attachments\//);
-    expect(copies.map((bot) => bot.approvalMode)).toEqual(copies.map(() => "full"));
+    expect(copies.map((bot) => bot.approvalMode)).toEqual(copies.map(() => "ask"));
     for (const bot of copies) {
       const skills = (await ok("GET", `/api/bots/${bot.id}/skills`)).skills as Array<{ enabled: boolean }>;
       expect(skills.every((skill) => !skill.enabled)).toBe(true);

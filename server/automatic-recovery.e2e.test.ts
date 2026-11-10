@@ -208,7 +208,7 @@ it("recovers a coordinated specialist and returns its result to the Chief exactl
     const { bot: chief } = await control("new-bot", "--name", "Recovery Chief", "--section", "Leadership");
     const { bot: specialist } = await control("new-bot", "--name", "Recovery specialist", "--section", "Engineering");
     await api("PATCH", `/api/bots/${chief.id}`, {
-      chiefOfStaff: true, managedSections: ["Engineering"], acknowledgePeerScope: true,
+      chiefOfStaff: true, managedSections: ["Engineering"], acknowledgePeerScope: true, approvalMode: "full",
     });
     await api("PATCH", `/api/bots/${specialist.id}/tasks/${specialist.activeTaskId}`, {
       modelSelection: primary, updateBotDefault: true, approvalMode: "ask",

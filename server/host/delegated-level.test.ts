@@ -68,6 +68,21 @@ describe("a Chief's level, every hop down", () => {
     expect(world({ "clive:room": "full" }, chain, new Set(["room"])).roomTurn(w.bot("bea"), "room", chain["room-ada"])).toBe("ask");
   });
 
+  it("does not let a Full Chief bypass a bot's ceiling in direct work or rooms", () => {
+    const w = world({ "clive:clive-chat": "full", "clive:room": "full" }, chain);
+    const bea = w.bot("bea");
+    bea.approvalCeiling = "ask";
+    w.apply(w.bot("ada"), "ada-work", "to-ada", bea, "bea-work");
+    expect(w.patched).toEqual([]);
+    expect(w.roomTurn(bea, "room", chain["room-ada"])).toBe("ask");
+
+    bea.approvalCeiling = "auto";
+    w.apply(w.bot("ada"), "ada-work", "to-ada", bea, "bea-work");
+    expect(w.patched).toMatchObject([{ botId: "bea", approvalMode: "auto" }]);
+    expect(w.levelOf({ botId: "bea", threadId: "room", groupId: "g" }, chain["room-ada"]))
+      .toEqual({ level: "auto", driverKind: "claudeAgent" });
+  });
+
   it("gives the runtime the Chief conversation's level only when the target runs at what the chain brought down", () => {
     const lifted = world({ "clive:room": "auto" }, chain);
     expect(lifted.levelOf({ botId: "bea", threadId: "room", groupId: "g" }, chain["room-ada"])).toEqual({ level: "auto", chief: "auto", driverKind: "claudeAgent" });

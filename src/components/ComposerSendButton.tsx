@@ -33,6 +33,8 @@ export function ComposerSendButton({ compact, waits, label, title, look, disable
   const alternate = menu?.choices[1] !== "restart" ? menu?.choices[1] : undefined;
   const button = (
     <button
+      data-workspace-send
+      data-waits={waits ? "" : undefined}
       onClick={(event) => onSend(event.metaKey || event.ctrlKey)}
       disabled={disabled}
       aria-label={label}

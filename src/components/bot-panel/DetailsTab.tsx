@@ -1,4 +1,4 @@
-import { Calendar, CalendarPlus, ChevronRight, Sparkles } from "lucide-react";
+import { Calendar, CalendarPlus, ChevronRight, ShieldCheck, Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
@@ -62,6 +62,13 @@ export function DetailsTab({ bot, derived, onOpen }: {
           />
         </div>
       </section>
+
+      <NavRow
+        data-panel-page="approvals"
+        icon={ShieldCheck}
+        title={t("permissions.center.title")}
+        onClick={() => onOpen("approvals")}
+      />
 
       <BotConversations bot={bot} />
 

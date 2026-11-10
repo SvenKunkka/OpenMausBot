@@ -33,6 +33,27 @@ describe("Store", () => {
     rmSync(DATA_DIR, { recursive: true, force: true });
   });
 
+  it("persists an approval ceiling and permanently clears modes above it", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    store.setAllThreadApprovalMode(bot.id, "full");
+    const capped = store.setBotApprovalCeiling(bot.id, "ask");
+    expect(capped).toMatchObject({ approvalCeiling: "ask", approvalMode: "ask" });
+    expect(store.setAllThreadApprovalMode(bot.id, "full")).toBeNull();
+    expect(store.createTask(bot.id, "Restricted", false, undefined, undefined, "full")).toMatchObject({ approvalMode: "ask" });
+
+    const restarted = new Store(selection);
+    expect(restarted.bot(bot.id)).toMatchObject({ approvalCeiling: "ask", approvalMode: "ask" });
+    expect(restarted.tasks(bot.id).every(task => task.approvalMode === "ask")).toBe(true);
+    const save = vi.spyOn(restarted as unknown as { saveBots(): void }, "saveBots")
+      .mockImplementationOnce(() => { throw new Error("disk full"); });
+    expect(() => restarted.setBotApprovalCeiling(bot.id, undefined)).toThrow();
+    expect(restarted.bot(bot.id)?.approvalCeiling).toBe("ask");
+    save.mockRestore();
+    restarted.setBotApprovalCeiling(bot.id, undefined);
+    expect(new Store(selection).bot(bot.id)).toMatchObject({ approvalMode: "ask" });
+  });
+
   it("retains tool selection across restarts and distinguishes clearing from no tools", () => {
     const store = new Store(selection);
     const bot = store.createBot({ name: "Scoped drafter" });
