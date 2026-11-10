@@ -1,0 +1,9 @@
+{
+  "sameFailures": [
+    "a new language redraws main's menu, both trays, the window title and the badge",
+    "the desktop holds its address on demand, read from the running companion",
+    "the helper finishes when any of the chosen modifiers is let go",
+    "the helper removes an orphan session before requesting speech authorization"
+  ],
+  "newFailures": []
+}
