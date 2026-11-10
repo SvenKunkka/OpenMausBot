@@ -59,6 +59,40 @@ describe("readSecureCredentials", () => {
     expect(result.status).toBe("unavailable");
   });
 
+  it("lets startup continue if the OS waits for a keychain response", async () => {
+    vi.useFakeTimers();
+    try {
+      let unlock;
+      const isAvailable = () => new Promise(resolve => { unlock = resolve; });
+      const decrypt = vi.fn(async () => "{}");
+      const result = readSecureCredentials(deps({ isAvailable, decrypt, timeoutMs: 50 }));
+      await vi.advanceTimersByTimeAsync(50);
+      await expect(Promise.race([result, Promise.resolve("still waiting")])).resolves.toEqual({
+        status: "timed-out", credentials: {}, error: "the operating-system credential store did not respond",
+      });
+      unlock(true);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(decrypt).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a decryption already waiting for the OS", async () => {
+    vi.useFakeTimers();
+    try {
+      const decrypt = vi.fn(() => new Promise(() => {}));
+      const result = readSecureCredentials(deps({ decrypt, timeoutMs: 50 }));
+      await vi.advanceTimersByTimeAsync(50);
+      await expect(Promise.race([result, Promise.resolve("still waiting")])).resolves.toMatchObject({
+        status: "timed-out", credentials: {},
+      });
+      expect(decrypt).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("says UNAVAILABLE for a file it cannot parse, rather than pretending it is empty", async () => {
     const decrypt = vi.fn().mockResolvedValue("not json");
     const result = await readSecureCredentials(deps({ decrypt }));

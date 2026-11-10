@@ -4,25 +4,46 @@ export const CREDENTIAL_READ_DELAYS_MS = [100, 200, 400, 800];
 
 const message = (error) => (error instanceof Error ? error.message : String(error));
 
-export async function readSecureCredentials({
-  exists,
+const CREDENTIAL_READ_TIMEOUT_MS = 8_000;
+
+export async function readSecureCredentials(options) {
+  if (!options.exists()) return { status: "empty", credentials: {} };
+
+  const deadline = new AbortController();
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      deadline.abort();
+      resolve({ status: "timed-out", credentials: {}, error: "the operating-system credential store did not respond" });
+    }, options.timeoutMs ?? CREDENTIAL_READ_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([timeout, readWithRetry(options, deadline.signal)]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readWithRetry({
   isAvailable,
   readFile,
   decrypt,
   sleep,
   delays = CREDENTIAL_READ_DELAYS_MS,
-}) {
-  if (!exists()) return { status: "empty", credentials: {} };
-
+}, signal) {
   let lastError = "the operating-system credential store is unavailable";
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     if (attempt > 0) await sleep(delays[attempt - 1]);
+    if (signal.aborted) break;
     try {
-      if (!(await isAvailable())) {
+      const available = await isAvailable();
+      if (signal.aborted) break;
+      if (!available) {
         lastError = "the operating-system credential store is unavailable";
         continue;
       }
       const decrypted = await decrypt(readFile());
+      if (signal.aborted) break;
       const text = typeof decrypted === "string" ? decrypted : decrypted?.result;
       try {
         const parsed = JSON.parse(text);
@@ -34,6 +55,7 @@ export async function readSecureCredentials({
         return { status: "unavailable", credentials: {}, error: "the credential store is not readable" };
       }
     } catch (error) {
+      if (signal.aborted) break;
       lastError = message(error);
     }
   }
