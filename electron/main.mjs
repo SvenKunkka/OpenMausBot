@@ -90,6 +90,7 @@ import environmentsModule from "./environments.cjs";
 import { pairingPageUrl } from "./server-address.mjs"; import { createServerConnect } from "./server-probe.mjs"; import { checkServer, createServerStatus, installServerStatus } from "./server-status.mjs";
 import localOriginModule from "./local-origin.cjs";
 import { buildApplicationMenu } from "./menu.mjs";
+import product from "./product-name.json" with { type: "json" };
 import { createComputerSharing, isHomeFolder, validateSharedFolders } from "./computer-sharing.mjs"; import { installServerLending } from "./server-lending.mjs"; import { ownEnvironmentIds } from "./lent-mcp.mjs";
 import { createHostScreenLease } from "./host-screen-lease.mjs";
 import { acquireDataDirLease } from "./data-dir-lease.mjs";
@@ -2775,7 +2776,7 @@ async function saveWorkspaceCredential(name, value) {
   );
 }
 
-installCredentialStoreIpc({ ipcMain, localOnly, dialog, windowFor: (sender) => BrowserWindow.fromWebContents(sender), t: nativeT, appName: () => app.name, unreadable: () => credentialStoreStatus === "unavailable", quitting: () => desktopShutdownStarted, moveAside: () => fs.renameSync(CREDENTIALS_FILE, `${CREDENTIALS_FILE}.unreadable-${Date.now()}`), log: slog, relaunch: relaunchAfterDesktopRemoteChange });
+installCredentialStoreIpc({ ipcMain, localOnly, dialog, windowFor: (sender) => BrowserWindow.fromWebContents(sender), t: nativeT, appName: () => product.name, unreadable: () => credentialStoreStatus === "unavailable", quitting: () => desktopShutdownStarted, moveAside: () => fs.renameSync(CREDENTIALS_FILE, `${CREDENTIALS_FILE}.unreadable-${Date.now()}`), log: slog, relaunch: relaunchAfterDesktopRemoteChange });
 ipcMain.handle("credential:set", localOnly("credential:set", (_event, name, value) => saveWorkspaceCredential(name, value)));
 
 ipcMain.handle("approvals:set-trusted-mode", localOnly("approvals:set-trusted-mode", (_event, botId, mode, options) => {
@@ -2816,6 +2817,7 @@ setCuaStateListener((connection) => {
 });
 
 app.whenReady().then(async () => {
+  app.setAboutPanelOptions({ applicationName: product.name });
   await evictStartupCacheOnce({
     userData: app.getPath("userData"),
     currentVersion: app.getVersion(),
@@ -2966,7 +2968,6 @@ app.whenReady().then(async () => {
     onLanguage: language => { if (nativeText.set(language)) { applyNativeLanguage(); talk.relabel(); } }, onShown: (language, sender) => { if (sender === mainWindow?.webContents && nativeText.follow(language)) { applyNativeLanguage(); talk.relabel(); } },
     page: event => senderIsLocal(event) ? "local" : cloudPageAsking(event) ?? (workspaceSenderAllowed(event, mainWindow?.webContents, environmentsState, rendererOrigin()) ? "server" : null) });
   talk.start({ globalShortcut, screen, prefs: desktopPrefs, remote: () => Boolean(desktopRemoteAccess), away: () => homeWindow.current().kind !== "computer", starting: () => !serverReady, localRequest: localServerRequest, dataDir: () => runningDataDir });
-  // Before the window, so the harness has the CUA descriptor on first render.
   cuaReady =
     !desktopRemoteAccess && (process.platform === "darwin" || process.platform === "linux" || process.platform === "win32")
       ? startCua().catch((e) => {
@@ -3029,7 +3030,6 @@ app.whenReady().then(async () => {
   }
   if (desktopShutdownStarted) return;
   if (app.isPackaged && !desktopRemoteAccess) void ensureManagedDesktop().start().then(() => companyBackupSchedule.start()).catch(() => {});
-  // Fresh local use never makes a Cloud request; start only restores an existing grant.
   if (app.isPackaged && !desktopRemoteAccess) {
     cloudAccountRestoring = true;
     cloudAccountStarted = ensureCloudAccount().start().catch(() => {}).then(() => accountRing()?.start()).finally(() => { cloudAccountRestoring = false; });

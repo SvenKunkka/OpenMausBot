@@ -1,14 +1,14 @@
 appId: com.svenkunkka.agent-workbench
-productName: Agent Workbench
-artifactName: Agent-Workbench-${version}-${arch}.${ext}
+productName: Sven Bots
+artifactName: Sven-Bots-${version}-${arch}.${ext}
 
 protocols:
-  - name: OpenMausBot package install
+  - name: Sven Bots package install
     schemes: [openmausbot]
 
 publish: null
 
-# Keep the Workbench's browser profile and macOS Keychain identity separate from the upstream app.
+# Preserve the existing browser profile and macOS Keychain namespace across display-name changes.
 extraMetadata:
   name: agent-workbench
   productName: Agent Workbench Local
@@ -128,11 +128,11 @@ mac:
     - from: dist-native/duckdb/darwin-${arch}/node_modules
       to: duckdb/node_modules
   extendInfo:
-    NSMicrophoneUsageDescription: OpenMausBot uses the microphone for voice dictation into the composer.
-    NSSpeechRecognitionUsageDescription: OpenMausBot transcribes your voice on-device to type messages for you.
-    NSAccessibilityUsageDescription: OpenMausBot uses Accessibility when you let a bot control this Mac.
-    NSScreenCaptureUsageDescription: OpenMausBot uses Screen Recording so bots can see this Mac before acting.
-    NSDownloadsFolderUsageDescription: OpenMausBot looks in Downloads for the file your Grok Bot saved when you move it here.
+    NSMicrophoneUsageDescription: Sven Bots uses the microphone for voice dictation into the composer.
+    NSSpeechRecognitionUsageDescription: Sven Bots transcribes your voice on-device to type messages for you.
+    NSAccessibilityUsageDescription: Sven Bots uses Accessibility when you let a bot control this Mac.
+    NSScreenCaptureUsageDescription: Sven Bots uses Screen Recording so bots can see this Mac before acting.
+    NSDownloadsFolderUsageDescription: Sven Bots looks in Downloads for the file your Grok Bot saved when you move it here.
   # Notarization runs manually after the build (notarytool + staple),
   # mirroring the BlueyLite ship_release.sh flow.
   notarize: false
@@ -142,7 +142,7 @@ dmg:
   # ${arch} is load-bearing: without it the x64 dmg silently overwrites
   # the arm64 one when both arches build (this section overrides both the
   # top-level and mac-level artifactName, so it must carry the arch itself)
-  artifactName: Agent-Workbench-${version}-${arch}.dmg
+  artifactName: Sven-Bots-${version}-${arch}.dmg
   # x/y are icon centres in points. electron-builder 26.15.3 sizes the window
   # from build/background.png and ignores dmg.window whenever a background is set.
   iconSize: 112
@@ -189,11 +189,11 @@ win:
 nsis:
   oneClick: true
   perMachine: false
-  shortcutName: OpenMausBot
+  shortcutName: Sven Bots
   # Versioned, like the .dmg. The README's /latest/download/ button needs a
   # STABLE filename, so ship a second copy named OpenMausBot-setup.exe on the
   # release — the same trick as OpenMausBot.dmg beside OpenMausBot-${version}.dmg.
-  artifactName: Agent-Workbench-${version}-setup.${ext}
+  artifactName: Sven-Bots-${version}-setup.${ext}
 
 linux:
   target:
@@ -226,7 +226,7 @@ linux:
       to: openmausbot-browser.apparmor
   desktop:
     entry:
-      Name: OpenMausBot
+      Name: Sven Bots
       Comment: Your own team of AI bots, in a chat app
       Keywords: AI;Agents;Chat;Productivity;
 

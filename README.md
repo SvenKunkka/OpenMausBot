@@ -1,8 +1,8 @@
-# Agent Workbench
+# Sven Bots
 
-**Agent Workbench** 是基于 OpenMausBot v0.1.151 开源版的本地机器人工作台。它使用浅色界面，把模型、权限状态和聊天操作放在同一视图。每个机器人都可以设置审批上限。macOS 桌面端可以复用已登录的 Codex CLI。
+**Sven Bots** 是基于 OpenMausBot v0.1.151 开源版的本地机器人工作台。它使用浅色界面，把模型、权限状态和聊天操作放在同一视图。每个机器人都可以设置审批上限。macOS 桌面端可以复用已登录的 Codex CLI。
 
-**Agent Workbench** is a local agent workspace based on OpenMausBot v0.1.151 OSS. Its light interface keeps the model, permission status, and chat controls in view. Each bot can have its own approval ceiling. The macOS app can use a signed-in local Codex CLI.
+**Sven Bots** is a local agent workspace based on OpenMausBot v0.1.151 OSS. Its light interface keeps the model, permission status, and chat controls in view. Each bot can have its own approval ceiling. The macOS app can use a signed-in local Codex CLI.
 
 This repository preserves the upstream notices and Apache-licensed code. The original project documentation below describes upstream downloads. This fork uses its own desktop bundle and is updated from this repository.
 

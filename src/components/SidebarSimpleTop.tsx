@@ -1,7 +1,7 @@
 import { LayoutTemplate, Search, X } from "lucide-react";
 import type { Ref } from "react";
 
-import { brandStatus, productName } from "@/lib/brand";
+import { productName } from "@/lib/brand";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { ELEVATED_CONTROL, ELEVATED_HOVER, ELEVATED_TINT } from "./elevated";
@@ -80,7 +80,7 @@ export function SidebarWorkspaceBrand() {
         <LayoutTemplate size={16} strokeWidth={1.8} aria-hidden="true" />
       </span>
       <span className="min-w-0 truncate text-[17px] font-semibold leading-tight tracking-[-0.035em] text-ink">
-        {brandStatus().source === "file" ? productName() : "Agent Workbench"}
+        {productName()}
       </span>
     </div>
   );

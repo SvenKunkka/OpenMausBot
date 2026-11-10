@@ -1,5 +1,6 @@
 // Electron has no role for the macOS Preferences… item, so it is built explicitly.
-import { Menu, app } from "electron";
+import { Menu } from "electron";
+import product from "./product-name.json" with { type: "json" };
 import nativeText from "./native-text.cjs";
 
 const role = (t, name, key, params) => ({ role: name, label: t(key, params) });
@@ -7,7 +8,7 @@ const role = (t, name, key, params) => ({ role: name, label: t(key, params) });
 // Electron 43's role labels are English only (lib/browser/api/menu-item-roles.ts), so each role menu is written out
 // with Electron's own items and order, and a label on every item.
 function roleMenus(t, isMac) {
-  const file = { role: "fileMenu", label: t("native.role.file"), submenu: [isMac ? role(t, "close", "native.role.closeWindow") : role(t, "quit", process.platform === "win32" ? "native.role.exit" : "native.role.quit")] };
+  const file = { role: "fileMenu", label: t("native.role.file"), submenu: [isMac ? role(t, "close", "native.role.closeWindow") : role(t, "quit", process.platform === "win32" ? "native.role.exit" : "native.role.quit", { app: product.name })] };
   const edit = {
     role: "editMenu",
     label: t("native.role.edit"),
@@ -123,22 +124,22 @@ export function buildApplicationMenu({ environments, activeId, onSwitch, onAddFr
   const atLogin = openAtLogin ? [{ id: "open-at-login", label: t("native.menu.openAtLogin"), type: "checkbox", checked: openAtLogin.checked, click: () => openAtLogin.onToggle(!openAtLogin.checked) }] : [];
   const roles = roleMenus(t, isMac);
   const appMenu = {
-    label: app.name,
+    label: product.name,
     submenu: [
-      role(t, "about", "native.role.about", { app: app.name }),
+      role(t, "about", "native.role.about", { app: product.name }),
       { label: t("native.menu.preferences"), accelerator: "CmdOrCtrl+,", click: () => onOpenSettings() },
       ...atLogin,
       { type: "separator" },
-      role(t, "hide", "native.role.hide", { app: app.name }),
+      role(t, "hide", "native.role.hide", { app: product.name }),
       role(t, "hideOthers", "native.role.hideOthers"),
       role(t, "unhide", "native.role.unhide"),
       { type: "separator" },
-      role(t, "quit", "native.role.quitApp", { app: app.name }),
+      role(t, "quit", "native.role.quitApp", { app: product.name }),
     ],
   };
   const template = [
     ...(isMac ? [appMenu] : []),
-    !isMac && openAtLogin ? { ...roles.file, submenu: [...atLogin, { type: "separator" }, role(t, "quit", "native.role.quit")] } : roles.file,
+    !isMac && openAtLogin ? { ...roles.file, submenu: [...atLogin, { type: "separator" }, role(t, "quit", "native.role.quit", { app: product.name })] } : roles.file,
     roles.edit,
     ...(home && !others.length ? [] : [server]),
     roles.view,

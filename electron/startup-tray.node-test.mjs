@@ -149,15 +149,15 @@ test("the tray's menu and the startup screen speak the app's language, and the t
   }
   const tray = createSystemTray({ Tray, Menu: { buildFromTemplate: value => value }, nativeImage: { createFromPath: () => ({ resize: () => ({}) }) },
     iconPath, getWindow: () => null, onQuit: () => {}, t: text.t });
-  assert.deepEqual(trayInstance.menu.map(item => item.label), ["Open OpenMaus Bot", undefined, "Quit OpenMaus Bot"]);
+  assert.deepEqual(trayInstance.menu.map(item => item.label), ["Open Sven Bots", undefined, "Quit Sven Bots"]);
   text.set("pt-br");
   tray.relabel();
-  assert.deepEqual(trayInstance.menu.map(item => item.label), ["Abrir o OpenMaus Bot", undefined, "Sair do OpenMaus Bot"]);
-  assert.equal(trayInstance.tooltip, "OpenMaus Bot");
+  assert.deepEqual(trayInstance.menu.map(item => item.label), ["Abrir o Sven Bots", undefined, "Sair do Sven Bots"]);
+  assert.equal(trayInstance.tooltip, "Sven Bots");
   const html = startupScreenHtml(iconPath, { t: text.t, lang: text.intlTag() });
   assert.match(html, /<html lang="pt-BR">/);
   assert.match(html, /<button aria-label="Fechar"/);
-  assert.match(startupScreenHtml(iconPath), /<html lang="en">.*<button aria-label="Close"/s);
+  assert.match(startupScreenHtml(iconPath), /<html lang="en">.*<title>Sven Bots<\/title>.*<button aria-label="Close"/s);
 });
 
 test("tray restores minimized windows, supports explicit quit, and disposes once", async () => {
