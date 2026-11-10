@@ -11,7 +11,7 @@ publish: null
 # Keep the Workbench's browser profile and macOS Keychain identity separate from the upstream app.
 extraMetadata:
   name: agent-workbench
-  productName: Agent Workbench
+  productName: Agent Workbench Local
 
 directories:
   buildResources: build
