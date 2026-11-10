@@ -39,7 +39,6 @@ import {
   approvalModeAllowed,
   approvalModeFor,
   modelSwitchNeedsAsk,
-  threadApproval,
   isEmergencyApprovalDowngrade,
   isApprovalMode, setDefaultApprovalMode,
   type ApprovalMode,
@@ -109,7 +108,7 @@ import { createDataRoutes } from "./data/routes.ts";
 import { DataSheetRegistry } from "./data/sheet.ts";
 import { DataFailure } from "./data/types.ts";
 import { TeamComputers, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
-import { isEffortLevel, type CardAnswerer, type ResolvedSender, type SignInRequestCardData, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
+import { isEffortLevel, type CardAnswerer, type ResolvedSender, type SignInRequestCardData, type WireGroup } from "../shared/wire.ts";
 import { isPersistentQuestionCard, shouldSettleRequestCard } from "../shared/ask-question.ts";
 import { parseToolScope } from "../shared/tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
@@ -302,6 +301,7 @@ import { createWebhookRoomPost } from "./host/webhook-room-deps.ts";
 import { createRoomJobs, parallelRoomJobsEnabled, type RoomRoundLine } from "./host/room-jobs.ts";
 import { createDelegatedLevel } from "./host/delegated-level.ts";
 import { createLiveApprovalMode } from "./host/live-approval.ts";
+import { createBotWire } from "./host/bot-wire.ts";
 import { CONSENT_RULE, escapeNotes, labelledLine, OUTSIDE, peerLineText, peerProvenanceNote, reportNote, requestWorkOrigin, type WorkOrigin } from "./peer-provenance.ts"; import { lineNote, PROVENANCE_PROMPT } from "./provenance-label.ts"; import { openRoomThread } from "./host/room-new-thread.ts"; import { createLineLabels } from "./host/line-labels.ts";
 import { decideRoomPost, emptyRoomPostBudget, type RoomPostAttempt, type RoomPostBudget } from "./room-post-budget.ts";
 import { messagePages, pageSize, slimMessage } from "./host/message-pages.ts";
@@ -317,8 +317,6 @@ import {
   type GroupDefaultResponder,
   type GroupRecord,
   type Message,
-  type TaskRecord,
-  toWireTask,
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { voiceNoteFailure } from "./tts/errors.ts";
@@ -2905,32 +2903,11 @@ if (browserCleanupReferencesReconciled) browserCleanup.startPending();
 
 let threadsAwaitingTeammates = (): ReadonlySet<string> => new Set<string>();
 let cacheKeepWarmStatus = (_threadId: string): KeepWarmStatus | undefined => undefined;
-const wireTask = (task: TaskRecord, botModel: ModelSelection, awaiting = threadsAwaitingTeammates(), bot = store.botByThread(task.threadId)): WireTask => {
-  // Snoozes heal on read against the server clock; the 0 sentinel ("until new activity") survives reads.
-  const { snoozedUntil, ...base } = toWireTask(task, botModel);
-  const approvalMode = approvalModeFor({
-    ...threadApproval(task, bot ?? {}), approvalCeiling: bot?.approvalCeiling, approvalGrant: bot?.approvalGrant, threadId: task.threadId,
-  });
-  const keepWarm = cacheKeepWarmStatus(task.threadId);
-  const coordinated = { ...base, approvalMode, autoApprove: approvalMode === "auto", waitingForTeammates: awaiting.has(task.threadId) && !task.busy, ...(keepWarm ? { cacheKeepWarm: keepWarm } : {}), ...(teamHost.ownTurn(task.threadId) ? { private: true as const } : {}), ...teamMessages.inbox.wire(task.threadId) };
-  const asleep = snoozedUntil === 0 || (snoozedUntil !== undefined && snoozedUntil > Date.now());
-  return asleep ? { ...coordinated, snoozedUntil } : coordinated;
-};
-
-/** Strips provider session ids (resumeCursors) here, not at call sites, so no broadcast or paired phone ever gets them. */
-const wireBot = (bot: BotRecord): WireBot => {
-  const { resumeCursors: _resumeCursors, tasks, approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, mainThreadChoice: _mainThreadChoice, ...rest } = bot;
-  // Clients see Ask while an elevated grant awaits the desktop's confirmation, never a grant that may still roll back.
-  const approvalMode = approvalModeFor({ ...rest, approvalGrant: approvalGrant?.threadOnly ? undefined : approvalGrant });
-  const visible = {
-    ...rest, approvalMode,
-    ...(rest.autoApprove !== undefined || (approvalGrant && !approvalGrant.threadOnly) ? { autoApprove: approvalMode === "auto" } : {}),
-  };
-  const awaiting = threadsAwaitingTeammates();
-  return { ...visible, waitingForTeammates: awaiting.has(bot.threadId) && !threadBusy(bot.id, bot.threadId),
-    mainThreadId: botMainThread(bot.id),
-    avatarUrl: visible.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection, awaiting, bot)) } : {}) };
-};
+const { wireBot, wireTask, wireTrustedApprovalBot } = createBotWire({
+  awaitingTeammates: () => threadsAwaitingTeammates(), botByThread: (threadId) => store.botByThread(threadId),
+  keepWarm: (threadId) => cacheKeepWarmStatus(threadId), ownTurn: (threadId) => teamHost.ownTurn(threadId),
+  inbox: (threadId) => teamMessages.inbox.wire(threadId), threadBusy, mainThread: botMainThread,
+});
 
 function toolScopeForTurn(botId: string) {
   const bot = store.bot(botId);
@@ -2939,13 +2916,6 @@ function toolScopeForTurn(botId: string) {
   if (!parsed.ok) throw Object.assign(new Error("This bot's tool selection is invalid. Open Access settings and save a valid selection before starting a turn."), { status: 409, code: "tool_scope" });
   return parsed.scope;
 }
-
-const wireTrustedApprovalBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
-  const { resumeCursors: _resumeCursors, tasks, approvalGrant: _approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, mainThreadChoice: _mainThreadChoice, ...rest } = bot;
-  const awaiting = threadsAwaitingTeammates();
-  const approvalMode = approvalModeFor(rest);
-  return { ...rest, approvalMode, ...(rest.autoApprove !== undefined ? { autoApprove: approvalMode === "auto" } : {}), mainThreadId: botMainThread(bot.id), avatarUrl: rest.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection, awaiting, bot)) } : {}) };
-};
 
 function previewSystemPrompt(bot: BotRecord) {
   const persona = botPersona(bot);

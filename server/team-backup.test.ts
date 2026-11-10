@@ -89,7 +89,7 @@ describe("additive portable team backups", () => {
     expect(backup.bots.find((bot) => bot.key === chief.id)).toHaveProperty("toolScope", scope);
     const restored = importTeamBackup(store, routines, backup, selection());
     expect(restored.bots.find((bot) => bot.name === "Mira 2")).toMatchObject({ toolScope: scope, computer: "off", composio: false, connectorTools: {} });
-    expect(approvalModeFor(restored.bots.find((bot) => bot.name === "Mira 2")!)).toBe("full");
+    expect(approvalModeFor(restored.bots.find((bot) => bot.name === "Mira 2")!)).toBe("ask");
     expect(restored.bots.find((bot) => bot.name === "Scout 2")).toHaveProperty("toolScope", { allow: [] });
     const invalid = structuredClone(backup) as unknown as { bots: Array<{ toolScope: unknown }> };
     invalid.bots[0].toolScope = { allow: null };
@@ -198,7 +198,7 @@ describe("additive portable team backups", () => {
     expect(importedChief.soulHash).toBe(soulHash(chief.soul!));
     expect(readFileSync(soulFile(importedChief.id), "utf8")).toBe(chief.soul);
     expect(importedChief).toMatchObject({ section: "Engineering 2", chiefOfStaff: true, description: chief.description, computer: "off", composio: false, browser: false, resumeCursors: {}, playbooks: chief.playbooks });
-    expect(approvalModeFor(importedChief)).toBe("full");
+    expect(approvalModeFor(importedChief)).toBe("ask");
     expect(result.bots.find((bot) => bot.name === "Ava 2")).toMatchObject({ section: "Operations 2", chiefOfStaff: true });
     expect(result.bots.find((bot) => bot.name === "Archived 2")).toMatchObject({ hidden: true });
     expect(importedChief).not.toHaveProperty("cwd");
@@ -347,14 +347,15 @@ describe("additive portable team backups", () => {
     const { store, routines, chief } = fixture();
     const backup = createTeamBackup(store, routines.listRoutines(), "My team");
     const source = backup.bots.find((bot) => bot.name === "Mira")!;
-    Object.assign(source, { id: chief.id, threadId: chief.threadId, cwd: "/tmp", composio: true, approvalMode: "full", autoApprove: true, browser: true, computer: "local", resumeCursors: { fixture: "secret-session" } });
+    Object.assign(source, { id: chief.id, threadId: chief.threadId, cwd: "/tmp", composio: true, approvalMode: "full", approvalCeiling: "full", autoApprove: true, browser: true, computer: "local", resumeCursors: { fixture: "secret-session" } });
     Object.assign(source.tasks[0].messages[0], { kind: "options", queued: true, card: { requestId: "live-approval" }, attachments: [{ path: "/etc/passwd" }] });
     const imported = importTeamBackup(store, routines, backup, selection()).bots.find((bot) => bot.name === "Mira 2")!;
     expect(imported.id).not.toBe(chief.id);
     expect(imported.threadId).not.toBe(chief.threadId);
     expect(imported.approvalMode).toBeUndefined();
-    expect(approvalModeFor(imported)).toBe("full");
-    expect(JSON.stringify(parseTeamBackup(backup))).not.toMatch(/live-approval|secret-session|\/etc\/passwd|approvalMode/);
+    expect(imported.approvalCeiling).toBeUndefined();
+    expect(approvalModeFor(imported)).toBe("ask");
+    expect(JSON.stringify(parseTeamBackup(backup))).not.toMatch(/live-approval|secret-session|\/etc\/passwd|approvalMode|approvalCeiling/);
   });
 
   it("rolls back fresh bots, rooms and transcripts after a late failure", () => {

@@ -40,7 +40,7 @@ import { HEADLESS_VERB_NAMES, usage } from "./cli-usage.ts";
 import { normalizePhoneOrigin, phonePairingInstructions, runPhoneSetup } from "./cli-phone-setup.ts";
 import { browserSignInLines, formatSessions, pairingBlock } from "./cli-pairing.ts";
 import { cliCommand, cliPrefix } from "./cli-invocation.ts";
-import { checkReach, envPublicUrl, lanProblem, localLinkBase, noRouteLines, publicUrlProblem, reachLines, waitForReach, type Route } from "./cli-reach.ts";
+import { checkReach, envPublicUrl, lanProblem, localLinkBase, publicUrlProblem, serveClosingLines, reachLines, waitForReach, type Route } from "./cli-reach.ts";
 import { lanUrl } from "./lan-address.ts";
 import { isLoopbackHost } from "../electron/server-address.mjs";
 import { parseDuration } from "./headless/args.ts";
@@ -876,10 +876,11 @@ export async function runServe(options: CliOptions, log: (line: string) => void 
     const reach = route && origin && route !== "lan" ? await waitForReach(options.port, origin, route === "public-url" ? 3_000 : 15_000) : undefined;
     if (route && origin) for (const line of reachLines(route, origin, options.port, prefix, reach)) log(line);
     const interactive = process.stdout.isTTY === true;
+    const pairingShown = options.pair && (options.phone || options.guided || ((route || serviceTrust) && interactive));
     if (options.pair && options.phone) {
       log("");
       if (!stopping && exited === null) await showPhonePairing(options, publicUrl, log).catch((error: unknown) => log(`no pairing code: ${message(error)}`));
-    } else if (options.pair && (options.guided || ((route || serviceTrust) && interactive))) {
+    } else if (pairingShown) {
       log("");
       try {
         log(await mintPairing(options.port, { label: options.label ? `${options.label} owner` : undefined, client: options.client, publicUrl: origin ?? undefined, guided: options.guided && !route }));
@@ -887,17 +888,8 @@ export async function runServe(options: CliOptions, log: (line: string) => void 
       } catch (error) {
         log(`no pairing code: ${message(error)}`);
       }
-    } else if (!route) {
-      log("");
-      if (serviceTrust) log(`Open http://127.0.0.1:${options.port} in a browser on this computer.`);
-      else for (const line of noRouteLines(options.port, prefix)) log(line);
-    } else if (!serviceTrust) {
-      log(`Get a pairing code: ${prefix} pair`);
     }
-    if (serviceTrust && !(options.pair && interactive)) log(`Let people sign in with their email: ${prefix} access add you@example.com`);
-    const pairAgain = serviceTrust ? "Settings → Remote access" : `${prefix} pair`;
-    if (interactive && !options.guided) log(`New code later   ${pairAgain}\nStop with Ctrl+C`);
-    if (options.guided) log(`\nKeep this terminal open while using your bots. Ctrl+C stops the server, not your saved work.\nNext time: ${prefix} · Change AI or phone setup: ${prefix} setup · Pair another device: ${pairAgain}`);
+    for (const line of serveClosingLines({ route, serviceTrust, port: options.port, prefix, interactive, guided: options.guided, pairingShown: Boolean(pairingShown), pair: options.pair })) log(line);
     return await childExit;
   } finally {
     serveOwnerToken = undefined;

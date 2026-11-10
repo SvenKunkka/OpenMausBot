@@ -13,4 +13,16 @@ function desktopServerHeaders(headers, { packaged, token }) {
   return next;
 }
 
-module.exports = { DESKTOP_MUTATION_HEADER, desktopServerHeaders };
+function createDesktopServerRequest({ port, packaged, token, ready }) {
+  return async (route, init = {}) => {
+    if (!ready()) throw new Error("not running");
+    return fetch(`http://127.0.0.1:${port()}${route}`, {
+      ...init,
+      redirect: "error",
+      credentials: "omit",
+      headers: desktopServerHeaders(Object.fromEntries(new Headers(init.headers)), { packaged, token }),
+    });
+  };
+}
+
+module.exports = { DESKTOP_MUTATION_HEADER, desktopServerHeaders, createDesktopServerRequest };

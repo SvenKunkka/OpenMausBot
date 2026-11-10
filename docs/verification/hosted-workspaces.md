@@ -20,10 +20,10 @@ every admin change needs a session. For recovery an operator restarts with
 The `identity.example.test` URLs below illustrate external identity-service
 endpoints; requests use the configured `OMB_ADMIN_URL`, not the tenant origin.
 
-1. The workspace's `/api/auth/hosted/start` creates bounded, expiring state
+1. The workspace's `https://workspace.example.test/api/auth/hosted/start` creates bounded, expiring state
    and a secure host-only handoff cookie. It redirects to the identity
    service's `/connect` with workspace, state and a SHA-256 PKCE challenge.
-2. The service returns a one-use code to `/api/auth/hosted/callback`.
+2. The service returns a one-use code to `https://workspace.example.test/api/auth/hosted/callback`.
    State and cookie must match. The workspace consumes local state before
    awaiting `POST https://identity.example.test/api/handoff/consume` with
    workspace, code, verifier and `contractVersion: 1`.
@@ -111,14 +111,14 @@ service.
 ```sh
 pnpm typecheck
 pnpm lint
-pnpm exec vitest run server/hosted-access.test.ts enterprise/server/workspace-access.test.ts server/email-signin.test.ts server/sessions.test.ts server/request-auth.test.ts server/enterprise.test.ts server/browser-live.test.ts server/fleet.test.ts server/fleet-cli.test.ts server/fleet-agent.test.ts server/fleet-cli-filesystem.test.ts src/components/WorkspacesSection.test.ts
+pnpm exec vitest run server/hosted-access.test.ts server/email-signin.test.ts server/sessions.test.ts server/request-auth.test.ts server/enterprise.test.ts server/browser-live.test.ts server/fleet.test.ts server/fleet-cli.test.ts server/fleet-agent.test.ts server/fleet-cli-filesystem.test.ts src/components/WorkspacesSection.test.ts
 pnpm test:packaged-server
 ```
 
 The full-server fixture launches an owned server with a disposable home and
 an injected fake HTTPS backchannel. It verifies hosted navigation, disabled
 legacy credentials, local recovery access, sign-in, outage, demotion,
-reauthentication and quiet event-stream closure. The bridge tests use real
+reauthentication and quiet event-stream closure. The [optional bridge tests](https://github.com/milind-soni/OpenMausBot/blob/v0.1.151/enterprise/server/workspace-access.test.ts) use real
 HTTP, cookies and sessions to check PKCE mismatch, expiry, replay, host
 binding and live permission checks. Fleet fixtures use disposable sockets,
 recording executors and bounded child processes for hostile file cases.

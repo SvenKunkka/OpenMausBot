@@ -18,14 +18,14 @@
 ## Driving it
 
 ```sh
-pnpm exec vitest run server/enterprise.test.ts enterprise/server/register.test.ts
+pnpm exec vitest run server/enterprise.test.ts
 pnpm exec vitest run --no-file-parallelism server/license-expiry-api.test.ts server/hosted-access.test.ts
 pnpm test:packaged-server
 ```
 
 `server/enterprise.test.ts` builds each layout in a temporary directory and
 checks which copy wins, the warning window, the grace period and the moment it
-ends. `enterprise/server/register.test.ts` issues keys with a throwaway signing
+ends. [The optional registration test](https://github.com/milind-soni/OpenMausBot/blob/v0.1.151/enterprise/server/register.test.ts) issues keys with a throwaway signing
 pair and checks the layer accepts a key that lapsed less than 7 days ago and
 refuses it after. `server/license-expiry-api.test.ts` boots the `control-omb`
 fixture with a stand-in layer whose key expires in 12 days, expired 2 days

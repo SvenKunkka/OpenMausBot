@@ -22,7 +22,7 @@ const dispatch = vi.fn();
 let host: HTMLDivElement;
 let root: Root;
 
-function render(bot: Bot, trustedModesAvailable = false, others: Bot[] = []) {
+function render(bot: Bot, trustedModesAvailable = false, others: Bot[] = [], parts?: Parameters<typeof PermissionsSection>[0]["parts"]) {
   const derived = {
     patch: (patch: object) => dispatch({ type: "updateBot", botId: bot.id, patch }),
     engine: { instanceId: "claude", driverKind: "claudeAgent", displayName: "Claude" },
@@ -32,7 +32,7 @@ function render(bot: Bot, trustedModesAvailable = false, others: Bot[] = []) {
   flushSync(() => root.render(createElement(BotEditorStore, {
     value: { state: { ...initialState, bots: [bot, ...others] }, dispatch,
       flushBotPatches: async () => null, refreshInstances: async () => {}, refreshModels: async () => {} },
-    children: createElement(PermissionsSection, { bot, derived }),
+    children: createElement(PermissionsSection, { bot, derived, parts }),
   })));
 }
 const choose = (label: string) => {
@@ -135,7 +135,7 @@ describe("Sending on your behalf", () => {
   it("has no limit to set or count, even for a rule saved with a daily cap", () => {
     const fetched = vi.fn(() => new Promise(() => {}));
     vi.stubGlobal("fetch", fetched);
-    render({ ...base, outbound: { policy: "allow", dailyCap: 25 } as Bot["outbound"] });
+    render({ ...base, outbound: { policy: "allow", dailyCap: 25 } as Bot["outbound"] }, false, [], ["outbound"]);
     expect(option("Send without asking")?.getAttribute("aria-pressed")).toBe("true");
     expect(host.querySelector("input")).toBeNull();
     expect(host.textContent).not.toContain("used today");

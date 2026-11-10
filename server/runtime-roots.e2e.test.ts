@@ -655,7 +655,10 @@ it("T9 parks the root on a sign-in card and runs it again with the signed-in lin
 
 it("T10 parks a teammate's turn on its credential card, tells the Chief at once, and the key answers the teammate", () => scenario(async (f) => {
   const mira = (await f.cli("new-bot", "--name", "Mira", "--section", "Engineering")).bot;
-  expect((await f.api("PATCH", `/api/bots/${f.clive.id}`, { chiefOfStaff: true, managedSections: ["Engineering"], acknowledgePeerScope: true })).status).toBe(200);
+  expect((await f.api("PATCH", `/api/bots/${f.clive.id}`, {
+    chiefOfStaff: true, managedSections: ["Engineering"], acknowledgePeerScope: true,
+    approvalMode: "full", applyToAllThreads: true,
+  })).status).toBe(200);
   const brief = "T10-BRIEF: set up the Grok model for the export; ask for the key you need.";
   f.script(f.clive.id,
     { key: "C0", match: ["T10-JOB"], steps: [{ arguments: { bot_ids: [mira.id], message: brief } }], reply: "C0: Mira is on it." },

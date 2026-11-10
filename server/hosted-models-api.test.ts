@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { launchVerificationServer, runControlOmb, verificationServerEnvironment, type VerificationServer } from "../scripts/control-omb.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
@@ -114,10 +114,13 @@ beforeAll(async () => {
   layer = mkdtempSync(join(tmpdir(), "omb-hosted-model-layer-"));
   mkdirSync(join(layer, "server"));
   writeFileSync(join(layer, "server/index.ts"), `
-    import { createWorkspaceAccess as create } from ${JSON.stringify(pathToFileURL(join(ROOT, "enterprise/server/workspace-access.ts")).href)};
     export function register() { return { customer: "Hosted models fixture", features: ["admin"], expiresAt: null }; }
-    export function createWorkspaceAccess(options) {
-      return create({ ...options, fetchImpl: async () => { throw new Error("The model fixture must not contact a portal"); } });
+    export function createWorkspaceAccess() {
+      return {
+        handlePublic: async () => false,
+        authorize: async () => ({ status: 403, error: "The model fixture does not issue portal sessions." }),
+        revalidate: async () => {},
+      };
     }
   `);
   fixture = await launchVerificationServer({}, undefined, undefined, undefined,

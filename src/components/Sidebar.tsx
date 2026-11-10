@@ -18,7 +18,6 @@ import { useHeldMenuMotion, useMenuMotion } from "./MenuMotion";
 import { lastNonReceipt } from "@/lib/receipts";
 import { botPreview, groupPreview } from "./sidebar-preview";
 import { activeLocale, t } from "@/lib/i18n";
-import { brandStatus, productName } from "@/lib/brand";
 import { copyText } from "@/lib/copy-text";
 import type { LocaleKey } from "@/locales";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -82,7 +81,7 @@ import { ELEVATED_CONTROL } from "./elevated";
 import { useTeamPeople } from "@/state/team-people";
 export { TeamMenuItems };
 import { SidebarResizeHandle, useSidebarWidth } from "./SidebarResizeHandle";
-import { PHONE_TOP_BUTTON, SIMPLE_CORNER_BUTTON, SIMPLE_ROW_FOCUS, SIMPLE_TOP_BUTTON, SidebarSearchPill, SidebarSearchToggle } from "./SidebarSimpleTop";
+import { PHONE_TOP_BUTTON, SIMPLE_CORNER_BUTTON, SIMPLE_ROW_FOCUS, SIMPLE_TOP_BUTTON, SidebarSearchPill, SidebarSearchToggle, SidebarWorkspaceBrand } from "./SidebarSimpleTop";
 import { isSidebarToggle } from "@/lib/keyboard-shortcuts";
 import { SidebarRailSeparator, SimpleRailFooter } from "./SidebarSimpleRail";
 import { useShowThreads } from "@/lib/thread-preferences";
@@ -1050,7 +1049,6 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
     const bot = currentArchivableBot(state.bots, id);
     if (bot) await archiveBotWithNotice(bot, { bots: state.bots, selectedId: state.selectedId, dispatch, showThreads, notify: setTeamFeedback });
   };
-  // Archives from the bot panel report here too, with the same Undo.
   useEffect(() => onArchiveNotice(setTeamFeedback), []);
 
   const undoBotArchive = async (bot: { id: string; name: string }) => {
@@ -1313,16 +1311,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
       </div>
 
       {density === "icons" && !rail && <DesktopWorkspaceSwitcher compact cloudHome={state.config?.cloudHome === true} place={state.config?.team?.name} owner={cloudOwner} howTo={state.cloudHowTo} onMenuClosed={endHowTo} />}
-      {density !== "icons" && (
-        <div data-workspace-brand className="mx-3 mb-2 flex items-center gap-2.5 border-b border-edge px-2 pb-3 pt-1.5">
-          <span className="flex size-7 shrink-0 items-center justify-center rounded-[7px] bg-accent text-accent-ink">
-            <LayoutTemplate size={16} strokeWidth={1.8} aria-hidden="true" />
-          </span>
-          <span className="min-w-0 truncate text-[17px] font-semibold leading-tight tracking-[-0.035em] text-ink">
-            {brandStatus().source === "file" ? productName() : "Agent Workbench"}
-          </span>
-        </div>
-      )}
+      {density !== "icons" && <SidebarWorkspaceBrand />}
       <OrganizationIdentity compact={density === "icons"} />
       {phone ? null : simple ? searchShown && <SidebarSearchPill query={query} onQuery={setQuery} onClose={closeSearch} /> : <div className={cn("pt-1 pb-3", density === "icons" ? "hidden" : "px-3")}>
         <div className={cn("flex h-8 items-center gap-2 rounded-full px-3 focus-within:ring-focus", ELEVATED_CONTROL)}>

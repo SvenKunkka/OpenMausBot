@@ -91,6 +91,31 @@ export function noRouteLines(port: number, prefix: string): string[] {
   ];
 }
 
+export function serveClosingLines({ route, serviceTrust, port, prefix, interactive, guided, pairingShown, pair }: {
+  route: Route | null;
+  serviceTrust: boolean;
+  port: number;
+  prefix: string;
+  interactive: boolean;
+  guided?: boolean;
+  pairingShown: boolean;
+  pair?: boolean;
+}): string[] {
+  const lines: string[] = [];
+  if (!pairingShown && !route) {
+    lines.push("");
+    if (serviceTrust) lines.push(`Open http://127.0.0.1:${port} in a browser on this computer.`);
+    else lines.push(...noRouteLines(port, prefix));
+  } else if (!pairingShown && !serviceTrust) {
+    lines.push(`Get a pairing code: ${prefix} pair`);
+  }
+  if (serviceTrust && !(pair && interactive)) lines.push(`Let people sign in with their email: ${prefix} access add you@example.com`);
+  const pairAgain = serviceTrust ? "Settings → Remote access" : `${prefix} pair`;
+  if (interactive && !guided) lines.push(`New code later   ${pairAgain}\nStop with Ctrl+C`);
+  if (guided) lines.push(`\nKeep this terminal open while using your bots. Ctrl+C stops the server, not your saved work.\nNext time: ${prefix} · Change AI or phone setup: ${prefix} setup · Pair another device: ${pairAgain}`);
+  return lines;
+}
+
 /** Where a browser on the same machine opens a code's link: the configured loopback address (Docker's published port),
  * or this server's own port. */
 export function localLinkBase(publicUrl: string | null, port: number, env: NodeJS.ProcessEnv = process.env): { base: string; place: "machine" | "docker" } {

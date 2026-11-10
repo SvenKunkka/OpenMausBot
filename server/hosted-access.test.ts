@@ -1,9 +1,10 @@
 // The HTTPS backchannel is injected, never redirected to a real portal.
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { request, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
@@ -12,6 +13,10 @@ import { SessionRegistry } from "./sessions.ts";
 import { HOSTED_CONTRACT_HEADER, HOSTED_CONTRACT_METADATA } from "./hosted-contract.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const workspaceAccessAdapter = resolve(process.env.OMB_TEST_HOSTED_ACCESS_ADAPTER || join(ROOT, "enterprise/server/workspace-access.ts"));
+const hasWorkspaceAccessAdapter = existsSync(workspaceAccessAdapter);
+const itWithPortal = it.skipIf(!hasWorkspaceAccessAdapter);
+const desktopOwnerToken = randomBytes(32).toString("base64url");
 let PORT: number;
 const HOST = "acme.example.test";
 const EMAIL = "member@example.test";
@@ -28,10 +33,11 @@ let policyBotId: string | undefined;
 const policyEvidence: unknown[] = [];
 const state = (role: string | null = "admin", outage = false, license: { features?: string[]; expiresAt?: string; invalid?: boolean } = {}) => writeFileSync(stateFile, JSON.stringify({ role, outage, license }));
 
-function call(path: string, options: { method?: string; cookie?: string; token?: string; local?: boolean; body?: unknown } = {}) {
+function call(path: string, options: { method?: string; cookie?: string; token?: string; local?: boolean; desktopOwner?: boolean; body?: unknown } = {}) {
   return new Promise<{ status: number; body: any; cookies: string[]; location?: string; contractVersion?: string | string[] }>((resolve, reject) => {
     const req = request({ hostname: "127.0.0.1", port: PORT, path, method: options.method ?? "GET", headers: {
       ...(options.local ? {} : { host: HOST, "x-forwarded-for": "203.0.113.8", "x-forwarded-proto": "https" }),
+      ...(options.desktopOwner ? { "x-openmausbot-desktop-owner": desktopOwnerToken } : {}),
       ...(options.cookie ? { cookie: options.cookie } : {}), ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
       ...(options.body === undefined ? {} : { "content-type": "application/json" }),
     } }, (res) => {
@@ -53,22 +59,22 @@ async function policyBot() {
     name: "Hosted policy fixture", requireAvailableModel: true, modelSelection: { instanceId: "claude", model: provider.models.default },
   } });
   expect(created.status, JSON.stringify(created.body)).toBe(201);
-  // Everywhere else bots start at Full access; here Full comes only from the operator's policy.
+  // Full access comes only from the operator's policy.
   expect(created.body.bot.approvalMode).toBe("ask");
   return policyBotId = created.body.bot.id as string;
 }
-async function policyHealth(enabled: boolean, cookie?: string) {
-  const health = await call("/api/health", cookie ? { cookie } : { local: true });
+async function policyHealth(enabled: boolean, cookie?: string, desktopOwner = false) {
+  const health = await call("/api/health", cookie ? { cookie } : { local: true, desktopOwner });
   expect(health.status).toBe(200);
   expect(health.body.capabilities.guardedFullAccess).toBe(1);
   expect(health.body.capabilities.sharedWorkspaceFullAccess).toBe(enabled ? 1 : undefined);
   policyEvidence.push({ health: health.body, authenticatedAs: cookie ? "portal session" : "loopback" });
 }
-async function refuseFullTask(cookie?: string) {
+async function refuseFullTask(cookie?: string, desktopOwner = false) {
   const botId = await policyBot();
-  const bots = async () => (await call("/api/bots?messages=0", { local: true })).body.bots;
+  const bots = async () => (await call("/api/bots?messages=0", { local: true, desktopOwner })).body.bots;
   const before = (await bots()).find((bot: any) => bot.id === botId);
-  const denied = await call(`/api/bots/${botId}/tasks`, { method: "POST", ...(cookie ? { cookie } : { local: true }),
+  const denied = await call(`/api/bots/${botId}/tasks`, { method: "POST", ...(cookie ? { cookie } : { local: true, desktopOwner }),
     body: { title: "Must not become Full", approvalMode: "full" } });
   expect(denied.status, JSON.stringify(denied.body)).toBe(403);
   expect((await bots()).find((bot: any) => bot.id === botId)).toEqual(before);
@@ -84,7 +90,10 @@ async function login() {
 }
 async function restart(env: NodeJS.ProcessEnv = {}) {
   await waitForExit(child, { signal: "SIGTERM" });
-  child = spawn(process.execPath, [join(ROOT, "server/index.ts")], { cwd: ROOT, env: { ...fixtureEnv, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const desktop = env.OMB_DESKTOP_PARENT === "1";
+  const args = desktop ? ["--import", join(ROOT, "server/testing/desktop-parent.mjs")] : [];
+  child = spawn(process.execPath, [...args, join(ROOT, "server/index.ts")], { cwd: ROOT,
+    env: { ...fixtureEnv, ...env, ...(desktop ? { OMB_TEST_DESKTOP_OWNER_TOKEN: desktopOwnerToken } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
   child.stdout?.on("data", (chunk) => log += chunk); child.stderr?.on("data", (chunk) => log += chunk);
   await expect.poll(async () => {
     try { return (await call("/api/health", { local: true })).status; } catch { return 0; }
@@ -103,14 +112,8 @@ beforeAll(async () => {
   const sessions = new SessionRegistry({ file: join(data, "sessions.json") });
   pairedToken = sessions.issue({ label: "Pre-existing QR device", scopes: ["admin", "client"] }).token;
   writeFileSync(join(data, "config.json"), JSON.stringify({ signIn: { admins: [EMAIL] }, instances: INSTANCES }));
-  writeFileSync(join(layer, "server", "index.ts"), `
-    import { readFileSync } from 'node:fs';
-    import { createWorkspaceAccess as create } from ${JSON.stringify(pathToFileURL(join(ROOT, "enterprise/server/workspace-access.ts")).href)};
-    export function register() {
-      const { license } = JSON.parse(readFileSync(${JSON.stringify(stateFile)}, 'utf8'));
-      if (license.invalid) throw new Error('invalid fixture license');
-      return { customer: 'Fixture', features: license.features ?? ['admin'], expiresAt: license.expiresAt ?? null };
-    }
+  const portalBridge = hasWorkspaceAccessAdapter ? `
+    import { createWorkspaceAccess as create } from ${JSON.stringify(pathToFileURL(workspaceAccessAdapter).href)};
     export function createWorkspaceAccess(options) {
       return create({ ...options, fetchImpl: async (url, init) => {
         if (new URL(url).origin !== 'https://admin.example.test') throw new Error('unexpected outbound origin');
@@ -121,6 +124,15 @@ beforeAll(async () => {
         return Response.json({ email: ${JSON.stringify(EMAIL)}, role: current.role, grant: 'g'.repeat(43) });
       } });
     }
+  ` : "";
+  writeFileSync(join(layer, "server", "index.ts"), `
+    import { readFileSync } from 'node:fs';
+    export function register() {
+      const { license } = JSON.parse(readFileSync(${JSON.stringify(stateFile)}, 'utf8'));
+      if (license.invalid) throw new Error('invalid fixture license');
+      return { customer: 'Fixture', features: license.features ?? ['admin'], expiresAt: license.expiresAt ?? null };
+    }
+    ${portalBridge}
   `);
   child = spawn(process.execPath, [join(ROOT, "server/index.ts")], { cwd: ROOT, env: fixtureEnv = {
     ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
@@ -152,7 +164,7 @@ afterAll(async () => {
 });
 
 describe("hosted bridge in the full server", () => {
-  it("loads the optional hook before listening, redirects hosted navigation, and disables legacy sign-in", async () => {
+  itWithPortal("loads the optional hook before listening, redirects hosted navigation, and disables legacy sign-in", async () => {
     expect(log).toContain("enterprise edition for Fixture");
     expect((await call("/")).location).toBe("/api/auth/hosted/start");
     expect((await call("/pair")).location).toBe("/api/auth/hosted/start");
@@ -165,7 +177,7 @@ describe("hosted bridge in the full server", () => {
     expect((await call("/api/auth/session", { local: true })).body.kind).toBe("loopback");
     expect((await call("/api/health/hosted")).status).toBe(503);
   });
-  it("accepts a portal session, enforces outages/demotion, and issues only current permissions on reauthentication", async () => {
+  itWithPortal("accepts a portal session, enforces outages/demotion, and issues only current permissions on reauthentication", async () => {
     const cookie = await login();
     expect((await call("/api/auth/session", { cookie })).body).toMatchObject({ scopes: ["admin", "client"], hosted: true });
     expect((await call("/", { cookie })).body).toContain("Fixture workspace");
@@ -179,7 +191,7 @@ describe("hosted bridge in the full server", () => {
     expect((await call("/api/auth/session", { cookie: memberCookie })).body).toMatchObject({ scopes: ["client"], hosted: true });
     expect((await call("/api/auth/sessions", { cookie: memberCookie })).status).toBe(403);
   });
-  it("keeps an Azure Live call to a workspace admin, in plain words, and never takes a local request for one", async () => {
+  itWithPortal("keeps an Azure Live call to a workspace admin, in plain words, and never takes a local request for one", async () => {
     state();
     const botId = await policyBot();
     const admin = await login();
@@ -203,7 +215,7 @@ describe("hosted bridge in the full server", () => {
       expect((await call("/api/live/settings", { method: "PATCH", cookie: await login(), body: { provider: "openai", azureEndpoint: "", azureDeployment: "" } })).status).toBe(200);
     }
   });
-  it("closes an existing quiet event stream within fifteen seconds of remote revocation", async () => {
+  itWithPortal("closes an existing quiet event stream within fifteen seconds of remote revocation", async () => {
     state();
     const cookie = await login();
     const response = await new Promise<IncomingMessage>((resolve, reject) => {
@@ -218,7 +230,7 @@ describe("hosted bridge in the full server", () => {
     expect(Date.now() - revokedAt).toBeLessThan(15_000);
     expect((await call("/api/auth/session", { cookie })).status).toBe(401);
   }, 17_000);
-  it("grants only new local Full tasks under the explicit hosted policy and preserves defaults and existing tasks", async () => {
+  itWithPortal("grants only new local Full tasks under the explicit hosted policy and preserves defaults and existing tasks", async () => {
     state();
     await restart({ OMB_ADMIN_MEMBERSHIP: "portal" });
     await policyHealth(false);
@@ -267,7 +279,7 @@ describe("hosted bridge in the full server", () => {
     expect((await call("/api/auth/email/verify", { method: "POST" })).status).toBe(403);
     expect((await call("/api/auth/session", { local: true })).body.kind).toBe("loopback");
   }, 25_000);
-  it("uses explicit portal membership without local allow-list synchronization and still revokes quiet streams", async () => {
+  itWithPortal("uses explicit portal membership without local allow-list synchronization and still revokes quiet streams", async () => {
     await waitForExit(child, { signal: "SIGTERM" });
     state();
     writeFileSync(join(home, ".openmausbot", "config.json"), JSON.stringify({ signIn: { admins: [], members: [] }, instances: INSTANCES }));
@@ -327,7 +339,7 @@ describe("hosted bridge in the full server", () => {
     await policyHealth(false);
     await refuseFullTask();
   }, 25_000);
-  it("withdraws hosted readiness the moment the running server's license grace period ends", async () => {
+  itWithPortal("withdraws hosted readiness the moment the running server's license grace period ends", async () => {
     // Expired a week ago less eight seconds: inside the 7-day grace, which ends mid-test.
     state("admin", false, { expiresAt: new Date(Date.now() + 8_000 - 7 * 24 * 60 * 60_000).toISOString() });
     await restart({ OMB_ADMIN_MEMBERSHIP: "portal", OMB_SHARED_WORKSPACE_FULL_ACCESS: "1" });
@@ -342,10 +354,11 @@ describe("hosted bridge in the full server", () => {
     state();
     await policyBot();
     await restart({ OMB_ADMIN_MEMBERSHIP: "portal", OMB_SHARED_WORKSPACE_FULL_ACCESS: "1", OMB_DESKTOP_PARENT: "1" });
-    await policyHealth(false);
-    await refuseFullTask();
+    await policyHealth(false, undefined, true);
+    await refuseFullTask(undefined, true);
+    expect((await call("/api/bots", { local: true })).status).toBe(403);
   }, 25_000);
-  it("offers the Slack management link for real agents to hosted admins and members, without sharing credentials", async () => {
+  itWithPortal("offers the Slack management link for real agents to hosted admins and members, without sharing credentials", async () => {
     state();
     await restart({ OMB_ADMIN_MEMBERSHIP: "portal" });
     const botId = await policyBot();
@@ -375,7 +388,7 @@ describe("hosted bridge in the full server", () => {
     expect((await call(path, { local: true })).body).toEqual({ available: false });
     policyEvidence.push({ slackManagement: management.body, memberStatus: asMember.status, localMembershipAvailable: false });
   }, 30_000);
-  it("treats a session-less local caller as a service by default: the Slack worker's calls work, admin changes need a session", async () => {
+  itWithPortal("treats a session-less local caller as a service by default: the Slack worker's calls work, admin changes need a session", async () => {
     state();
     await restart({ OMB_ADMIN_MEMBERSHIP: "portal", OMB_SHARED_WORKSPACE_FULL_ACCESS: "1", OMB_LOOPBACK_TRUST: undefined });
     expect(log).toContain("local requests: service trust (hosted workspace)");

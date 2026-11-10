@@ -1,6 +1,7 @@
 // The engine instances a fresh install starts with, and the ones an existing product fleet gains.
 // instanceConfigs (config.ts) copies every entry before it changes one.
 import type { InstanceConfigMap } from "./contracts.ts";
+import { withoutComputerEngine } from "./computer-engine-removal.ts";
 
 export const OPENAI_API_INSTANCE = "openai";
 export const OPENROUTER_API_INSTANCE = "openrouter";
@@ -51,6 +52,16 @@ export const DEFAULT_FLEET: InstanceConfigMap = {
   cline: { driver: "clineAgent" },
   pi: { driver: "piAgent" },
 };
+
+export function initialInstanceFleet(configured: InstanceConfigMap | null, desktopManaged: boolean): InstanceConfigMap {
+  const map: InstanceConfigMap = withoutComputerEngine(configured ? { ...configured } : { ...DEFAULT_FLEET });
+  // A saved custom fleet predating built-in discovery must still offer the signed-in local CLI on desktop.
+  if (desktopManaged && configured && !Object.hasOwn(map, "codex-local") &&
+      !Object.values(map).some((entry) => entry.driver === "codex")) {
+    map["codex-local"] = { driver: "codex" };
+  }
+  return map;
+}
 
 const CUSTOM_ONLY = {
   qwen: { driver: "qwenAgent" },

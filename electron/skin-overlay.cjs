@@ -10,7 +10,7 @@ const SKIN_CHROME = Object.freeze({
   graphite: Object.freeze({ color: "#111214", symbolColor: "#b3b8c2" }),
   linen: Object.freeze({ color: "#eceff3", symbolColor: "#59616c" }),
   dusk: Object.freeze({ color: "#121014", symbolColor: "#b9afbd" }),
-  daylight: Object.freeze({ color: "#fcfcfc", symbolColor: "#575757" }),
+  daylight: Object.freeze({ color: "#ffffff", symbolColor: "#475772" }),
   meadow: Object.freeze({ color: "#ffffff", symbolColor: "#4d5a52" }),
   pop: Object.freeze({ color: "#fdf5ea", symbolColor: "#3a322d" }),
   halloween: Object.freeze({ color: "#110d16", symbolColor: "#c2b3cc" }),

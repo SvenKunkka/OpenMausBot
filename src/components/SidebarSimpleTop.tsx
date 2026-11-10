@@ -1,6 +1,7 @@
-import { Search, X } from "lucide-react";
+import { LayoutTemplate, Search, X } from "lucide-react";
 import type { Ref } from "react";
 
+import { brandStatus, productName } from "@/lib/brand";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { ELEVATED_CONTROL, ELEVATED_HOVER, ELEVATED_TINT } from "./elevated";
@@ -68,6 +69,19 @@ export function SidebarSearchPill({ query, onQuery, onClose }: { query: string; 
           <X size={14} aria-hidden="true" />
         </button>
       </div>
+    </div>
+  );
+}
+
+export function SidebarWorkspaceBrand() {
+  return (
+    <div data-workspace-brand className="mx-3 mb-2 flex items-center gap-2.5 border-b border-edge px-2 pb-3 pt-1.5">
+      <span className="flex size-7 shrink-0 items-center justify-center rounded-[7px] bg-accent text-accent-ink">
+        <LayoutTemplate size={16} strokeWidth={1.8} aria-hidden="true" />
+      </span>
+      <span className="min-w-0 truncate text-[17px] font-semibold leading-tight tracking-[-0.035em] text-ink">
+        {brandStatus().source === "file" ? productName() : "Agent Workbench"}
+      </span>
     </div>
   );
 }

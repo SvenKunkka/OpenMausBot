@@ -235,7 +235,8 @@ function sendLine({ cloudName = "My Cloud", waiting }) {
  * answer at once the line is left out, never guessed. `home`: the bots moved and home is My Cloud, which the line says
  * only then, whichever place the window shows. `send`: what waits (main's last comparison) and its actions. */
 async function placesMenuOptions({ cloud, home = false, homeOrigin = null, platform, port, send = null, text = englishText,
-  localBots = () => fetch(`http://127.0.0.1:${port}/api/bots`, { signal: AbortSignal.timeout(700) }).then((response) => response.json()) }) {
+  localRequest = (route, init) => fetch(`http://127.0.0.1:${port}${route}`, init),
+  localBots = () => localRequest("/api/bots?messages=0", { signal: AbortSignal.timeout(700) }).then((response) => response.json()) }) {
   const foldSublabels = platform !== "darwin";
   if (homeOrigin) return { foldSublabels, homeOrigin };
   if (!cloud) return { foldSublabels };

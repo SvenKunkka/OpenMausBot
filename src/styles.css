@@ -790,18 +790,18 @@
   --radius-2xl: 16px;
   --radius-3xl: 16px;
   --radius-4xl: 18px;
-  --identity-green: #00864c;
-  --identity-blue: #2271e3;
-  --identity-red: #d63a42;
-  --identity-orange: #b35e15;
+  --identity-green: #00884e;
+  --identity-blue: #2573e4;
+  --identity-red: #d63f47;
+  --identity-orange: #b65f15;
   --identity-purple: #8057C8;
-  --identity-cyan: #0b7f99;
-  --identity-pink: #d2357a;
-  --identity-yellow: #91701b;
-  --identity-teal: #018375;
-  --identity-coral: #d83920;
-  --identity-silver: #6e7580;
-  --identity-chrome: #697688;
+  --identity-cyan: #0b819b;
+  --identity-pink: #d3397d;
+  --identity-yellow: #93721b;
+  --identity-teal: #018577;
+  --identity-coral: #db3a20;
+  --identity-silver: #707782;
+  --identity-chrome: #6b778a;
   --shadow-float: 0 4px 12px -1px rgb(28 28 28 / 0.08), 0 2px 4px -2px rgb(28 28 28 / 0.06);
 }
 

@@ -549,7 +549,7 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
         section: "Launch",
         autoApprove: false,
         approvePeerComms: false,
-        approvalMode: "full",
+        approvalMode: "ask",
         modelSelection: defaultSelection,
       });
       expect(operator.chiefOfStaff).toBeFalsy();

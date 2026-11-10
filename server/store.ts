@@ -29,11 +29,13 @@ import type { TeamSetupRequest, TeamSetupResult } from "../shared/team-setup.ts"
 import type { GroupGoalRunCardData } from "../shared/group-goal-run.ts";
 import { isMentionBoundary, isMentionNameContinuation } from "../shared/mention-boundary.ts"; import { resolveMentions } from "../shared/room-mentions.ts";
 import type { HandedState } from "./delta-context.ts";
+import type { AssertExact, AssertSameKeys, TaskRecord } from "./task-wire.ts";
+export { taskWireProjectionIsExact, toWireTask, type TaskRecord, type TaskWireDerivedKeys, type TaskWirePrivateKeys, type TaskWireProjection, type TaskWireProjectionIsExact } from "./task-wire.ts";
 import type { AgentPart, PartPair, RoomPart } from "./package-parts.ts";
 import type {
   BotActivity, GroupDefaultResponder, GroupTask as GroupTaskRecord,
   TaskClosedBy, TaskOpenedBy, TaskUsage, WireBot, WireGroup,
-  WireMessage, WireTask, BotProject as BotProjectRecord,
+  WireMessage, BotProject as BotProjectRecord,
 } from "../shared/wire.ts";
 import { movesThreadToTop, nextOpenThread } from "../shared/wire.ts";
 import { parseConnectorTools } from "./connector-tools.ts";
@@ -69,36 +71,6 @@ export const groupWireProjectionIsExact: GroupWireProjectionIsExact = true;
 const projectEmojiPattern = new RegExp("^(?!\\p{Emoji_Component}$)(?:\\p{RGI_Emoji}|[\\p{Emoji}--\\p{Emoji_Component}])$", "v");
 export function isProjectEmoji(value: unknown): value is string {
   return typeof value === "string" && value.length <= 64 && projectEmojiPattern.exec(value)?.[0] === value;
-}
-
-export interface TaskRecord extends Omit<WireTask, TaskWireDerivedKeys> {
-  resumeCursors: Record<string, unknown>;
-  lastInstanceId?: string;
-  handedMessages?: Record<string, HandedState>;
-  appliedCompactionId?: string;
-  contextFloor?: number;
-  lastContextModel?: string;
-  /** Absent (legacy) may be a person's choice: only an "auto" pin yields to a Works on change. */
-  surfaceSource?: "user" | "auto";
-  /** Epoch ms a person last wrote here: never a teammate, routine, webhook, the bot itself or a Slack relay. */
-  askedAt?: number;
-}
-
-export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource" | "askedAt";
-export type TaskWireDerivedKeys = "surfaceAuto" | "followsBotModel";
-export type TaskWireProjection = Pick<TaskRecord, Exclude<keyof TaskRecord, TaskWirePrivateKeys>> & Pick<WireTask, TaskWireDerivedKeys>;
-type AssertExact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
-type AssertSameKeys<A, B> = [keyof A] extends [keyof B] ? ([keyof B] extends [keyof A] ? true : never) : never;
-/** TS lets an optional extra field through (a type without it still extends {field?: T}), so keys are checked too. */
-export type TaskWireProjectionIsExact = AssertExact<WireTask, TaskWireProjection> & AssertSameKeys<WireTask, TaskWireProjection>;
-export const taskWireProjectionIsExact: TaskWireProjectionIsExact = true;
-
-export function toWireTask(task: TaskRecord, botModel: ModelSelection): WireTask {
-  const { resumeCursors: _resumeCursors, lastInstanceId: _lastInstanceId, handedMessages: _handedMessages,
-    appliedCompactionId: _appliedCompactionId, contextFloor: _contextFloor, lastContextModel: _lastContextModel,
-    surfaceSource, askedAt: _askedAt, ...stored } = task;
-  const wire: WireTask = { ...stored, modelSelection: structuredClone(task.modelSelection ?? botModel), followsBotModel: task.modelSelection === undefined };
-  return surfaceSource === "auto" && wire.surface !== undefined ? { ...wire, surfaceAuto: true } : wire;
 }
 
 const ASK_NOW = { approvalMode: "ask" as const, autoApprove: false, alwaysAllow: [] as string[] };
