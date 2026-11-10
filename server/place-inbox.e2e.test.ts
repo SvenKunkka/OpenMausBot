@@ -62,6 +62,7 @@ function place(call: Call, home: () => string) {
   const say = async (botId: string, threadId: string, text: string, more: Record<string, unknown> = {}) => {
     const sent = await call("POST", `/api/bots/${botId}/messages`, { text, threadId, ...more });
     expect(sent.status, JSON.stringify(sent.body)).toBe(202);
+    return sent.body;
   };
   return { script, turns, inbox, count, listed, notes, messages, bot, thread, say };
 }
@@ -158,15 +159,23 @@ describe.each([
       { key: "W1", match: ["W1-GO"], steps: [{ arguments: { bot_ids: [eli.id], message: "W1-BRIEF: pick the page." } }], reply: "W1: handed on" },
       { key: "W1-DONE", match: ["Your downstream room requests have settled.", "W1-GO"], reply: "W1-DONE" });
     h.script(eli.id, { key: "W1-E", match: ["W1-BRIEF"], timeoutMs: 120_000, steps: [{ server: "ogb", tool: "ask_user", arguments: { question: "Which page for Mira?", choices: ["Home", "Pricing"] }, capture: { answer: "([\\s\\S]+)" } }], reply: "W1-E: {{answer}}" });
-    await h.say(mira.id, mira.threadId, "W1-GO");
+    const tracked = role === "desktop";
+    const accepted = await h.say(mira.id, mira.threadId, "W1-GO", tracked ? { inboxTask: true, sendId: "inbox_awaited_work_12345" } : {});
+    const task = async () => (await fx.local("GET", "/api/inbox/tasks")).body.tasks.find((row: { id: string }) => row.id === accepted.taskId);
     await until(async () => (await h.listed()).some((row) => row.from.name === eli.name && row.kind === "ask"), "the handed-on question in the inbox");
     const row = (await h.listed()).find((one) => one.from.name === eli.name && one.kind === "ask")!;
     expect(row.workingFor?.name).toBe(mira.name);
     expect(row.origin?.botId).toBe(eli.id);
+    if (tracked) await expect.poll(task, { timeout: hostTimeout(30_000) }).toMatchObject({ status: "waiting-work" });
     const call = role === "desktop" ? fx.local : fx.onCloud;
     expect((await call("POST", `/api/threads/${row.origin!.threadId}/respond`, { requestId: row.card!.requestId, behavior: "answer", message: "Home" })).status).toBe(200);
     await until(async () => (await h.messages(row.origin!.threadId)).some((line) => line.text === "W1-E: Home"), "the work to go on");
     expect((await h.listed()).some((one) => one.id === row.id)).toBe(false);
+    if (tracked) {
+      await expect.poll(task, { timeout: hostTimeout(30_000) }).toMatchObject({ status: "replied", resultMessageId: expect.any(String) });
+      const taskResult = await task();
+      expect((await h.messages(mira.threadId)).find((message) => message.id === (taskResult?.resultMessageId))?.text).toBe("W1-DONE");
+    }
   }, hostTimeout(180_000));
 
   it("clears news once it is read, and keeps it listed until it is done", async () => {
@@ -227,3 +236,73 @@ describe("on a Cloud someone else once used", () => {
     expect([restricted("G1"), restricted("G3")]).toEqual([true, true]);
   }, hostTimeout(420_000));
 });
+
+it("holds a second local inbox task while the first task waits for approval", async () => {
+  const h = place(fx.local, () => join(fx.root, "desktop"));
+  const bot = await h.bot("Tracked approval");
+  h.script(bot.id,
+    { key: "A", match: ["INBOX-APPROVAL-A"], approve: { tool: "Bash", input: { command: "echo fixture" } }, reply: "Approved task result" },
+    { key: "B", match: ["INBOX-APPROVAL-B"], reply: "Queued task result" });
+  const send = async (key: string) => {
+    const response = await fx.local("POST", `/api/bots/${bot.id}/messages`, {
+      threadId: bot.threadId, inboxTask: true, sendId: `inbox_approval_send_${key}`, text: `INBOX-APPROVAL-${key}`,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(202);
+    return response.body.taskId as string;
+  };
+  const task = async (id: string) => ((await fx.local("GET", "/api/inbox/tasks")).body.tasks as { id: string; status: string; cardMessageId?: string; resultMessageId?: string }[]).find(row => row.id === id);
+
+  const a = await send("A");
+  await expect.poll(() => task(a), { timeout: hostTimeout(30_000) }).toMatchObject({
+    status: "waiting-input", cardMessageId: expect.any(String),
+  });
+  const cardId = (await task(a))!.cardMessageId;
+  const card = (await h.messages(bot.threadId)).find(message => message.id === cardId)?.card;
+  expect(card?.requestId).toEqual(expect.any(String));
+  const b = await send("B");
+  expect(await task(b)).toMatchObject({ status: "queued" });
+  expect((await h.messages(bot.threadId)).some(message => message.text === "INBOX-APPROVAL-B")).toBe(false);
+
+  const response = await fx.local("POST", `/api/threads/${bot.threadId}/respond`, { requestId: card!.requestId, behavior: "allow" });
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+  await expect.poll(() => task(b), { timeout: hostTimeout(30_000) }).toMatchObject({ status: "replied" });
+  expect(await task(a)).toMatchObject({ status: "replied" });
+  const lines = await h.messages(bot.threadId);
+  const resultIds = [(await task(a))?.resultMessageId, (await task(b))?.resultMessageId];
+  expect(lines.filter(message => resultIds.includes(message.id)).map(message => message.text))
+    .toEqual(["Approved task result", "Queued task result"]);
+  expect((await fx.onCloud("GET", "/api/inbox/tasks")).status).toBe(404);
+}, hostTimeout(120_000));
+
+it("settles a tracked execution that ends successfully without producing a reply", async () => {
+  const h = place(fx.local, () => join(fx.root, "desktop"));
+  const bot = await h.bot("Tracked empty reply");
+  h.script(bot.id, { key: "empty", match: ["INBOX-EMPTY-RESULT"], reply: "" });
+  const response = await fx.local("POST", `/api/bots/${bot.id}/messages`, {
+    threadId: bot.threadId, inboxTask: true, sendId: "inbox_empty_send_12345", text: "INBOX-EMPTY-RESULT",
+  });
+  expect(response.status, JSON.stringify(response.body)).toBe(202);
+  await expect.poll(async () => {
+    const { tasks } = (await fx.local("GET", "/api/inbox/tasks")).body;
+    return tasks.find((task: { id: string }) => task.id === response.body.taskId);
+  }, { timeout: hostTimeout(30_000) }).toMatchObject({
+    status: "failed", reason: "The execution ended without a reply",
+  });
+}, hostTimeout(120_000));
+
+it("keeps ordinary sends available to a paired client without task-inbox access", async () => {
+  const h = place(fx.local, () => join(fx.root, "desktop"));
+  const bot = await h.bot("Client-only pairing");
+  const invitation = await fx.local("POST", "/api/auth/pairing", { label: "Chat-only test", scopes: ["client"] });
+  const paired = await fx.local("POST", "/api/auth/pair", { code: invitation.body.code });
+  expect(paired.status).toBe(200);
+  const base = new URL(fx.desktopBase);
+  const headers = { "content-type": "application/json", authorization: `Bearer ${paired.body.token}` };
+  const config = await fetch(new URL("/api/config", base), { headers });
+  expect(config.status).toBe(200);
+  expect(await config.json()).toMatchObject({ inboxTasks: false });
+  const sent = await fetch(new URL(`/api/bots/${bot.id}/messages`, base), {
+    method: "POST", headers, body: JSON.stringify({ threadId: bot.threadId, text: "Ordinary chat remains available" }),
+  });
+  expect(sent.status).toBe(202);
+}, hostTimeout(120_000));

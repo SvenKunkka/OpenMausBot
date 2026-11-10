@@ -53,7 +53,7 @@ export function QueuedComposerMessages({
   oneThreadPerBot = false,
   onSeePlans,
 }: {
-  items: Array<{ queueId: string; text: string; reason?: SteerQueueReason }>;
+  items: Array<{ queueId: string; text: string; inboxTask?: true; reason?: SteerQueueReason }>;
   oneThreadPerBot?: boolean;
   onSeePlans?: () => void;
   onSteer?: () => void;
@@ -66,6 +66,7 @@ export function QueuedComposerMessages({
   if (!items.length) return null;
 
   const multiple = items.length > 1;
+  const steerAllowed = onSteer && !items.some((item) => item.inboxTask);
   const steerLabel = steering
     ? t("composer.queued.steering")
     : multiple
@@ -117,7 +118,7 @@ export function QueuedComposerMessages({
             <span dir="auto" className="min-w-0 flex-1 truncate text-[14px] text-ink" title={label}>
               {label}
             </span>
-            {index === 0 && onSteer && (
+            {index === 0 && steerAllowed && (
               <button
                 type="button"
                 onClick={onSteer}

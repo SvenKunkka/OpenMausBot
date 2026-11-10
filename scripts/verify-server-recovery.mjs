@@ -167,9 +167,18 @@ if (process.versions.electron && process.argv.includes(flag)) {
       return result;
     };
 
-    if (scenario === "recover") {
+    if (scenario === "recover" || scenario === "recover-inbox") {
       const { bot } = await control("create_bot", { name: "Recovery fixture" });
-      await control("send_bot_message", { bot_id: bot.id, task_id: bot.activeTaskId, text: "Do not replay this interrupted fixture turn." });
+      const text = "Do not replay this interrupted fixture turn.";
+      let taskId;
+      if (scenario === "recover-inbox") {
+        const receipt = await fetcher(`/api/bots/${bot.id}/messages`, { method: "POST",
+          body: JSON.stringify({ threadId: bot.activeTaskId, inboxTask: true, sendId: randomUUID(), text }) });
+        assert.equal(typeof receipt.taskId, "string");
+        taskId = receipt.taskId;
+      } else {
+        await control("send_bot_message", { bot_id: bot.id, task_id: bot.activeTaskId, text });
+      }
       await until(() => existsSync(join(home, "fake.json")), "fake engine accepted the turn");
       fakePid = JSON.parse(readFileSync(join(home, "fake.json"), "utf8")).pid;
       const prompts = readFileSync(join(home, "prompts.jsonl"), "utf8");
@@ -192,6 +201,13 @@ if (process.versions.electron && process.argv.includes(flag)) {
       assert.equal(JSON.parse(readFileSync(join(dataDir, ".openmausbot-server-child/openmausbot-server.lease"), "utf8")).pid, replacementPid);
       const wait = await control("wait_for_conversation", { target_type: "bot", target_id: bot.id, task_id: bot.activeTaskId, timeout_seconds: 2 });
       assert.equal(wait.target.busy, false);
+      if (taskId) {
+        const { tasks } = await fetcher("/api/inbox/tasks");
+        const task = tasks.find((row) => row.id === taskId);
+        assert.equal(task?.status, "interrupted");
+        assert.equal(typeof task?.sourceMessageId, "string");
+        commands.push({ name: "verify_task_inbox_after_restart", task });
+      }
       const messages = await control("get_bot_messages", { bot_id: bot.id, task_id: bot.activeTaskId, limit: 10 });
       assert.equal(messages.messages.filter((message) => message.role === "user").length, 1);
       await sleep(1200);
@@ -227,7 +243,8 @@ if (process.versions.electron && process.argv.includes(flag)) {
   mkdirSync(join(output, "ui"));
   writeFileSync(join(output, "ui/index.html"), "<!doctype html><title>Isolated recovery fixture</title>");
   console.log(JSON.stringify({ evidence: output }));
-  for (const scenario of ["recover", "quit", "exhausted"]) {
+  const recovery = process.argv.includes("--task-inbox") ? "recover-inbox" : "recover";
+  for (const scenario of [recovery, "quit", "exhausted"]) {
     const home = join(output, scenario, "home");
     mkdirSync(home, { recursive: true });
     const child = spawn(electron, [fileURLToPath(import.meta.url), flag, scenario, output, process.execPath], {

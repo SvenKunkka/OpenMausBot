@@ -7,6 +7,8 @@ import { useAdvancedMode } from "@/lib/interface-mode";
 import { t } from "@/lib/i18n";
 import { PHONE_LAYOUT, useMediaQuery } from "@/lib/use-media-query";
 import { closeInbox, readInboxLine, readInboxRow, useInboxPanel, useInboxView, widenInbox } from "@/state/inbox";
+import { inboxTaskTab, inboxTasksInTab, useInboxTasks, type InboxTaskTab } from "@/state/inbox-tasks";
+import { InboxTaskRows } from "./InboxTaskRows";
 import { InboxActive } from "./InboxActive";
 import { InboxReading } from "./InboxReading";
 import { InboxRowItem } from "./InboxRow";
@@ -24,6 +26,15 @@ export function InboxPanel() {
   const { run } = useInboxActions(view);
   const [now, setNow] = useState(() => Date.now());
   const [query, setQuery] = useState("");
+  const taskInbox = useInboxTasks();
+  const [selectedTab, setTab] = useState<InboxTaskTab | null>(null);
+  const tab = selectedTab ?? (panel.reading ? "messages" : inboxTaskTab(taskInbox.tasks));
+  const unread = inboxTasksInTab(taskInbox.tasks, "unread").length;
+  const active = inboxTasksInTab(taskInbox.tasks, "active").length;
+  const tabs = [{ id: "active", count: active }, { id: "unread", count: unread }, { id: "messages", count: 0 }, { id: "all", count: 0 }] as const;
+  useEffect(() => {
+    if (taskInbox.phase === "ready" && selectedTab === null) setTab(tab);
+  }, [taskInbox.phase, selectedTab, tab]);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
@@ -35,7 +46,7 @@ export function InboxPanel() {
     else closeInbox();
   };
   const reading = panel.reading ? view?.rows.find((row) => row.id === panel.reading) : undefined;
-  const open = (row: InboxRow) => { readInboxRow(row); readInboxLine(row.id); };
+  const open = (row: InboxRow) => { setTab("messages"); readInboxRow(row); readInboxLine(row.id); };
   const rows = listedRows(view).filter((row) => matchesSearch(row, query));
   const ids = rows.map((row) => row.id);
   const at = reading ? ids.indexOf(reading.id) : -1;
@@ -77,9 +88,22 @@ export function InboxPanel() {
           <X size={16} aria-hidden="true" />
         </button>
       </div>
+      {taskInbox.enabled && !reading && <div role="group" aria-label={t("inbox.tasks.filters")} className="mx-2 mb-1.5 flex shrink-0 flex-wrap gap-0.5 border-b border-hairline/40 pb-1.5">
+        {tabs.map(({ id, count }) => (
+          <button key={id} type="button" data-inbox-task-tab={id} aria-pressed={tab === id} onClick={() => setTab(id)}
+            className={cn("inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-[12px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-accent/60", tab === id ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/60 hover:text-ink")}>
+            {t(`inbox.tasks.tab.${id}`)}
+            {count > 0 && <span className="tabular-nums text-ink-secondary">{count}</span>}
+          </button>
+        ))}
+      </div>}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {reading && view ? (
           <InboxReading view={view} row={reading} now={now} position={at >= 0 ? { index: at, count: rows.length } : null} onStep={step} />
+        ) : taskInbox.enabled && tab !== "messages" ? (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <InboxTaskRows key={tab} tasks={inboxTasksInTab(taskInbox.tasks, tab)} phase={taskInbox.phase} now={now} />
+          </div>
         ) : (
           <>
             <div className="min-h-0 flex-1 overflow-y-auto">

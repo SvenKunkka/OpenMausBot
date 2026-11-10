@@ -70,6 +70,16 @@ describe("QueuedComposerMessages", () => {
     expect(markup).toContain('aria-label="Delete queued message 1 of 1"');
     expect(markup).not.toContain("Steer");
   });
+  it("keeps cancellation but hides steering when a task shares the queue", () => {
+    const markup = renderToStaticMarkup(createElement(QueuedComposerMessages, {
+      items: [...oneItem, { queueId: "task", text: "Independent task", inboxTask: true }],
+      onSteer: () => undefined,
+      onCancel: () => undefined,
+    }));
+    expect(markup).not.toContain("Steer");
+    expect(markup).toContain('aria-label="Delete queued message 2 of 2"');
+  });
+
   it("names a queued picture instead of showing its attachment tag and path", () => {
     const markup = renderToStaticMarkup(
       createElement(QueuedComposerMessages, {

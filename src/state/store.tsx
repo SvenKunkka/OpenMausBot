@@ -22,6 +22,7 @@ import { bumpThreadUpdatedAt, mergeTaskStamps, rewindThreadUpdatedAt } from "./t
 import { botOpensTo, closeTrayUnlessShown, closeUnpinnedTray, openBot, openThread, visibleNotificationThread, withRememberedTrayPin } from "./thread-navigation";
 import { patchGroupTask } from "./thread-edits";
 import type { EngineInstall } from "./engine-install";
+import { refreshInboxTasks } from "./inbox-tasks";
 import { optimisticMessageId, optimisticUserMessage, sendArrived, sendReconciled } from "./optimistic-send";
 import { patchedGroups, roomAnswers, snapshotPatch } from "./room-frames";
 import { savedStateAction, type SavedOwner, type SavedSnapshot } from "./saved-state";
@@ -409,7 +410,7 @@ export type { BrowserEngineSummary, BrowserProfile, ConfigStatus, ManagedPolicyS
 // A section left out here is wiped from state.config whenever a config frame lands.
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "mistral" | "cerebras" | "groq" | "greenference" | "meta" | "deepseek" | "xResearch" | "treg" | "postiz" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "mcp" | "threads" | "automaticRecovery" | "cacheKeepWarm" | "localVm" | "opencodeGo" | "tts" | "decider" | "helpers" | "imageGen" | "live" | "savedKeys" | "profile" | "everyBotRules" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome" | "team" | "workspaceBanner"
+  "xai" | "mistral" | "cerebras" | "groq" | "greenference" | "meta" | "deepseek" | "xResearch" | "treg" | "postiz" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "mcp" | "threads" | "automaticRecovery" | "cacheKeepWarm" | "localVm" | "opencodeGo" | "tts" | "decider" | "helpers" | "imageGen" | "live" | "savedKeys" | "profile" | "everyBotRules" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome" | "inboxTasks" | "team" | "workspaceBanner"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -448,6 +449,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     budgets: frame.budgets,
     billing: frame.billing,
     managedPolicy: frame.managedPolicy,
+    ...(frame.inboxTasks ? { inboxTasks: true } : {}),
     ...(frame.cloudHome ? { cloudHome: true } : {}), ...(frame.team ? { team: frame.team } : {}), ...(frame.workspaceBanner ? { workspaceBanner: frame.workspaceBanner } : {}),
   };
 }
@@ -607,7 +609,7 @@ export interface AppState {
   dataResultFocus: { botId: string; id: string; requestId: number; consumed: boolean } | null;
   signInFocus: { botId: string; messageId: string; url: string; site: string; place: import("../../shared/wire").Surface; requestId: number; consumed: boolean } | null;
   dataView: import("@/lib/composer-attachments").DataViewContext | null;
-  focusMessage: { threadId: string; messageId: string; matchText?: string; nonce: number; consumed: boolean } | null;
+  focusMessage: { threadId: string; messageId: string; matchText?: string; inboxTaskId?: string; archivedMessages?: Message[]; nonce: number; consumed: boolean } | null;
   unreadDivider: UnreadDivider | null;
   connected: boolean;
   hydrated?: true;
@@ -619,7 +621,7 @@ export interface AppState {
     nonce: number;
     kind: Exclude<MausMotion, "none">;
   } | null;
-  pendingQueued: Record<string, Array<{ queueId: string; text: string; reason?: SteerQueueReason }>>;
+  pendingQueued: import("../../shared/wire").BotQueuedMessages;
   consumedQueueIds: Record<string, true>;
   backgroundThreadEvents: Record<string, Array<Extract<Action, { type: "messageAdded" | "messagePatched" | "threadActive" | "optimisticMessageRemoved" }>>>;
   loadingOlder: Record<string, true>;
@@ -718,9 +720,9 @@ export type Action =
       replyToId?: string;
       threadId?: string;
       dataContext?: import("../../shared/data-context").DataContext; pointed?: import("../../shared/app-frame/point").PointedElement[]; openPage?: import("../lib/open-page").OpenPage; mode?: "chat" | "goal";
-      followUp?: import("../../shared/follow-up").FollowUp; mentions?: string[]; onError?: () => void;
+      followUp?: import("../../shared/follow-up").FollowUp; inboxTask?: true; inboxSteer?: string; inboxSupplement?: boolean; mentions?: string[]; onError?: () => void;
     }
-  | { type: "pendingQueued"; threadId: string; queueId: string; text: string; reason?: SteerQueueReason }
+  | { type: "pendingQueued"; threadId: string; queueId: string; text: string; inboxTask?: true; reason?: SteerQueueReason }
   | { type: "consumePendingQueued"; threadId: string; queueId: string }
   | { type: "cancelQueued"; botId: string; queueId: string; threadId?: string; onCancelled?: () => void }
   | { type: "steerQueued"; botId: string; queueId: string; threadId?: string; onError?: () => void; onSettled?: () => void }
@@ -747,7 +749,7 @@ export type Action =
       onError?: (message: string) => void;
     }
   | { type: "newTask"; botId: string; projectId?: string; cwd?: string; onCreated?: () => void; onError?: (message: string) => void }
-  | { type: "switchTask"; botId: string; threadId: string; whole?: true }
+  | { type: "switchTask"; botId: string; threadId: string; whole?: true; onSwitched?: () => void; onError?: (message: string) => void }
   | { type: "switchTaskFailed"; botId: string; threadId: string }
   | { type: "taskSwitched"; bot: Bot }
   | { type: "renameTask"; botId: string; threadId: string; title: string }
@@ -792,7 +794,8 @@ export type Action =
   | { type: "signInFocusConsumed"; requestId: number }
   | { type: "toggleInspector"; open?: boolean }
   | { type: "toggleActivity"; open?: boolean }
-  | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
+  | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string; inboxTaskId?: string; archivedMessages?: Message[] }
+  | { type: "clearInboxTaskFocus" }
   | { type: "focusMessageConsumed"; nonce: number }
   | { type: "unreadDividerDone"; threadId: string }
   | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean }
@@ -1459,10 +1462,14 @@ export function reducer(state: AppState, action: Action): AppState {
           threadId: action.threadId,
           messageId: action.messageId,
           matchText: action.matchText,
+          inboxTaskId: action.inboxTaskId,
+          archivedMessages: action.archivedMessages,
           nonce: (state.focusMessage?.nonce ?? 0) + 1,
           consumed: false,
         },
       };
+    case "clearInboxTaskFocus":
+      return state.focusMessage?.archivedMessages ? { ...state, focusMessage: { ...state.focusMessage, archivedMessages: undefined, consumed: true } } : state;
     case "focusMessageConsumed":
       if (!state.focusMessage || state.focusMessage.nonce !== action.nonce) return state;
       return { ...state, focusMessage: { ...state.focusMessage, consumed: true } };
@@ -1640,7 +1647,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         pendingQueued: {
           ...state.pendingQueued,
-          [action.threadId]: [...prev, { queueId: action.queueId, text: action.text, ...(action.reason ? { reason: action.reason } : {}) }],
+          [action.threadId]: [...prev, { queueId: action.queueId, text: action.text, ...(action.inboxTask ? { inboxTask: true as const } : {}), ...(action.reason ? { reason: action.reason } : {}) }],
         },
       };
     }
@@ -2255,7 +2262,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
 
     const wrapped: React.Dispatch<Action> = (action) => {
-      if (["select", "newTask", "switchTask", "newGroupTask", "switchGroupTask", "showChat", "showRoutines", "showTeamMap", "showFiles", "showWebPanel"].includes(action.type)) selectionRevision.current++;
+      if (["select", "newTask", "switchTask", "newGroupTask", "switchGroupTask", "showChat", "showRoutines", "showTeamMap", "showFiles", "showWebPanel"].includes(action.type)) {
+        selectionRevision.current++;
+        if (stateRef.current.focusMessage?.archivedMessages) rawDispatch({ type: "clearInboxTaskFocus" });
+      }
       // Pin before any await or optimistic state change.
       action = pinBotThreadAction(action, stateRef.current.bots);
       if (action.type === "taskSwitched") action = { ...action, bot: withTaskWrites(action.bot) as Bot };
@@ -2444,16 +2454,41 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             action.threadId ?? stateRef.current.bots.find((bot) => bot.id === action.botId)?.threadId;
           const sendId = action.sendId ?? randomUuid();
           const arrived = () => sendArrived(stateRef.current.bots.find((bot) => bot.id === action.botId && bot.threadId === threadId)?.messages, sendId);
+          let posting = false;
+          const post = () => {
+            posting = true;
+            return api(`/api/bots/${action.botId}/messages`, {
+              method: "POST",
+              body: JSON.stringify({
+                text: action.text, replyToId: action.replyToId, threadId, sendId,
+                dataContext: action.dataContext, pointed: action.pointed?.length ? action.pointed : undefined,
+                openPage: action.openPage, mode: action.mode === "goal" ? "goal" : undefined,
+                ...(action.inboxTask ? { inboxTask: true } : { followUp: action.followUp, inboxSteer: action.inboxSteer }),
+                mentions: action.mentions?.length ? action.mentions : undefined,
+              }),
+            });
+          };
+          const removeOptimistic = () => { if (threadId) rawDispatch({ type: "optimisticMessageRemoved", threadId, sendId }); };
+          const steerUncertain = (reported = false) => {
+            if (!reported && arrived()) return;
+            removeOptimistic();
+            rawDispatch({ type: "error", message: t("inbox.tasks.steerUncertain") });
+          };
           void waitForExecutionSettings(botBeforeSend ? [botBeforeSend] : [], threadId)
-            .then(() => sendReconciled(() => api(`/api/bots/${action.botId}/messages`, {
-                method: "POST",
-                body: JSON.stringify({ text: action.text, replyToId: action.replyToId, threadId, sendId, ...(action.dataContext ? { dataContext: action.dataContext } : {}), ...(action.pointed?.length ? { pointed: action.pointed } : {}), ...(action.openPage ? { openPage: action.openPage } : {}), ...(action.mode === "goal" ? { mode: "goal" } : {}), ...(action.followUp ? { followUp: action.followUp } : {}), ...(action.mentions?.length ? { mentions: action.mentions } : {}) }),
-              }), arrived))
+            .then(() => action.inboxSupplement ? post().then((body) => ({ body })) : sendReconciled(post, arrived))
             .then((sent) => {
-              if (!("body" in sent)) return;
-              const body = sent.body;
+              const body = "body" in sent ? sent.body : undefined;
               if (body?.message && typeof body.threadId === "string") {
                 rawDispatch({ type: "messageAdded", threadId: body.threadId, message: body.message });
+              }
+              if (body?.steerUncertain === true) { steerUncertain(true); return; }
+              if (action.inboxTask && (typeof body?.taskId === "string" || "arrived" in sent)) {
+                void refreshInboxTasks();
+                const current = stateRef.current;
+                if (current.activeView === "chat" && current.selectedId === action.botId &&
+                    current.bots.find((bot) => bot.id === action.botId)?.threadId === threadId) {
+                  wrapped({ type: "notice", notice: { kind: "note", botName: null, text: t("inbox.tasks.accepted") } });
+                }
               }
               if (
                 body?.queued &&
@@ -2470,15 +2505,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                   threadId: body.threadId,
                   queueId: body.queueId,
                   text: action.text,
+                  inboxTask: action.inboxTask,
                   reason: body.reason === "capacity" || body.reason === "group-turn" ? body.reason : undefined,
                 });
               }
             })
             .catch((error) => {
-              if (threadId) {
-                rawDispatch({ type: "optimisticMessageRemoved", threadId, sendId });
+              if (action.inboxSupplement && error instanceof ApiError && error.body?.steerUncertain === true) {
+                steerUncertain(true);
+                return;
               }
-              showError(error);
+              if (action.inboxSupplement && posting && (!(error instanceof ApiError) || error.status >= 500)) {
+                steerUncertain();
+                return;
+              }
+              removeOptimistic();
+              if (action.inboxSupplement && error instanceof ApiError && error.status === 409) {
+                rawDispatch({ type: "error", message: t("inbox.tasks.steerUnavailable") });
+              } else {
+                showError(error);
+              }
               action.onError?.();
             });
           break;
@@ -2833,10 +2879,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             .then((r) => {
               if (action.type === "newTask") { settle(null); action.onCreated?.(); }
               if (navigation.get(action.botId) !== revision) return;
-              if (!r?.bot) { if (action.type === "switchTask") rawDispatch({ type: "switchTaskFailed", botId: action.botId, threadId: action.threadId }); return; }
+              if (!r?.bot) {
+                if (action.type === "switchTask") {
+                  rawDispatch({ type: "switchTaskFailed", botId: action.botId, threadId: action.threadId });
+                  action.onError?.(t("inbox.tasks.openFailed"));
+                }
+                return;
+              }
               const selectsAfterCreation = action.type === "newTask" && action.cwd !== undefined;
               if (selectsAfterCreation && selectionRevision.current !== selectedAtStart) return;
               dispatch({ type: "taskSwitched", bot: r.bot });
+              if (action.type === "switchTask" && selectedAtStart === selectionRevision.current) action.onSwitched?.();
               if (selectsAfterCreation) rawDispatch({ type: "select", id: action.botId });
             })
             .catch((error) => {
@@ -2845,7 +2898,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               }
               const message = error instanceof Error ? error.message : String(error);
               settle(message);
-              if (action.type === "newTask" && action.onError) action.onError(message);
+              if (action.onError) action.onError(message);
               else showError(error);
             });
           break;

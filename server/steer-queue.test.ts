@@ -797,6 +797,11 @@ describe("steer-queue e2e (fake ACP fleet)", () => {
             environment: { FAKE_ACP_MODE: "echo-gated", FAKE_ACP_GATE_FILE: drainGate },
             config: { cli: FAKE_CLI, fullAuto: true },
           },
+          steerInbox: {
+            driver: "grokAgent",
+            environment: { FAKE_ACP_MODE: "echo-gated", FAKE_ACP_GATE_FILE: join(home, "gates", "inbox.gate") },
+            config: { cli: FAKE_CLI, fullAuto: true },
+          },
           steerEarly: {
             driver: "grokAgent",
             environment: { FAKE_ACP_MODE: "echo-gated", FAKE_ACP_GATE_FILE: earlyGate },
@@ -865,6 +870,58 @@ describe("steer-queue e2e (fake ACP fleet)", () => {
     console.info(JSON.stringify({ evidencePath }));
     if (home) await removeTempDir(home);
   });
+
+  it("accepts three independent inbox tasks in one conversation and retries a queued send by its original ID", async () => {
+    const bot = await newBot("steerInbox", "Task Inbox");
+    const path = `/api/bots/${bot.id}/messages`;
+    const send = (key: string) => api("POST", path, {
+      inboxTask: true, text: `Independent task ${key}`, sendId: `inbox_test_send_${key}`,
+    });
+
+    const first = await send("A");
+    expect(first.status).toBe(202);
+    expect(first.body.taskId).toEqual(expect.any(String));
+    await until(async () => (await botById(bot.id)).busy, "task A to start");
+
+    const second = await send("B");
+    const third = await send("C");
+    expect(second.body).toMatchObject({ queued: true, taskId: expect.any(String) });
+    expect(third.body).toMatchObject({ queued: true, taskId: expect.any(String) });
+    expect(new Set([first.body.taskId, second.body.taskId, third.body.taskId]).size).toBe(3);
+    expect((await send("B")).body.taskId).toBe(second.body.taskId);
+    expect(echoes(await botById(bot.id))).toHaveLength(0);
+    await expect.poll(async () => (await api("GET", "/api/inbox/tasks")).body.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: first.body.taskId, status: "running", executionId: expect.any(String) }),
+      expect.objectContaining({ id: second.body.taskId, status: "queued" }),
+      expect.objectContaining({ id: third.body.taskId, status: "queued" }),
+    ]));
+
+    writeFileSync(join(home, "gates", "inbox.gate"), "release task A");
+    await until(async () => {
+      const snapshot = await botById(bot.id);
+      return !snapshot.busy && echoes(snapshot).length === 3;
+    }, "three separately executed tasks");
+    const snapshot = await botById(bot.id);
+    expect(snapshot.messages.filter((message: any) => message.role === "user").map((message: any) => message.queueId))
+      .toEqual([first.body.taskId, second.body.taskId, third.body.taskId]);
+    expect((await send("B")).body.taskId).toBe(second.body.taskId);
+    expect(echoes(await botById(bot.id))).toHaveLength(3);
+    const { tasks } = (await api("GET", "/api/inbox/tasks")).body;
+    expect(tasks).toEqual(expect.arrayContaining(
+      [first, second, third].map((response, index) => expect.objectContaining({
+        id: response.body.taskId, status: "replied", resultMessageId: echoes(snapshot)[index].id,
+      })),
+    ));
+    expect((await api("POST", `/api/inbox/tasks/${second.body.taskId}/read`)).status).toBe(200);
+    const viewed = (await api("GET", "/api/inbox/tasks")).body.tasks;
+    expect(viewed.find((task: any) => task.id === first.body.taskId).seenAt).toBeUndefined();
+    expect(viewed.find((task: any) => task.id === second.body.taskId).seenAt).toEqual(expect.any(Number));
+    const stale = await api("POST", path, {
+      followUp: "steer", inboxSteer: first.body.taskId, text: "A late supplement", sendId: "inbox_late_supplement_123",
+    });
+    expect(stale.status).toBe(409);
+    expect((await botById(bot.id)).messages.some((message: any) => message.text === "A late supplement")).toBe(false);
+  }, 60_000);
 
   it("drains exactly once after completion precedes the dispatch acknowledgment", async () => {
     const bot = await newBot("steerEarly", "Early completion");

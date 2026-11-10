@@ -930,7 +930,7 @@ export type SteerQueueReason = "capacity" | "group-turn";
 
 /** Pending steer-queue chips, as `queuedSteerSnapshot` emits them and the
  * `bot.queued` frame carries them: threadId → queued items. */
-export type BotQueuedMessages = Record<string, Array<{ queueId: string; text: string; reason?: SteerQueueReason; /** The reason in plain words, shown as it is. */ why?: string }>>;
+export type BotQueuedMessages = Record<string, Array<{ queueId: string; text: string; inboxTask?: true; reason?: SteerQueueReason; /** The reason in plain words, shown as it is. */ why?: string }>>;
 
 /** Skills library browse surface: one row per library entry, with the bots
  * currently assigned to it. Version is null for locally imported skills. */
@@ -979,6 +979,7 @@ export type ServerFrame =
   | { kind: "runtime"; event: RuntimeEvent }
   /** An MCP server was added, changed or removed: a list of them is stale. */
   | { kind: "mcp.changed" }
+  | { kind: "inbox-tasks.changed" }
   /** `surface` names what the frame shows: the bot's desktop (`computer`) or its built-in browser. */
   | { kind: "screen"; botId: string; threadId: string; png: string; mime?: string; surface?: "browser" | "computer" }
   /** A bot's computer is being set up or woken for a turn; the chat shows

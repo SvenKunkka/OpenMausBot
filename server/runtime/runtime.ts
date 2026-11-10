@@ -17,6 +17,7 @@ export interface RuntimeOptions {
   limits?: Partial<Limits>;
   level?: typeof assignmentLevel;
   log?: (line: string) => void;
+  interruptOnRestart?: (node: Assignment) => boolean;
 }
 
 export interface BeginRequest {
@@ -56,6 +57,7 @@ export class Runtime {
   private readonly level: typeof assignmentLevel;
   private readonly log: (line: string) => void;
   private readonly bootAt: number;
+  private readonly interruptOnRestart?: RuntimeOptions["interruptOnRestart"];
   private opened = false;
   private closing = false;
   private ticking = false;
@@ -74,6 +76,7 @@ export class Runtime {
     this.level = options.level ?? assignmentLevel;
     this.log = options.log ?? (line => console.error("runtime:", line));
     this.bootAt = this.clock.now();
+    this.interruptOnRestart = options.interruptOnRestart;
   }
 
   /** Restart reconciliation and re-park of needs_input, from stored data only. Idempotent; runs before the first tick. */
@@ -84,6 +87,11 @@ export class Runtime {
     // Deepest first: a child's fate marks its parent before the parent's own turn is judged.
     const live = this.store.all({ nonTerminal: true }).sort((a, b) => b.depth - a.depth);
     this.withBatch(() => {
+      for (const root of live) {
+        if (!root.parentId && this.interruptOnRestart?.(root)) {
+          this.cancelTree(root, "Execution interrupted by restart", "failed", "interrupted");
+        }
+      }
       for (const snapshot of live) {
         const n = this.store.get(snapshot.id);
         if (!n || isTerminal(n)) continue;

@@ -237,7 +237,7 @@ import { createOneOnOneGoals } from "./host/one-on-one-goals.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { openCodeProviderKeysAllowed, setOpenCodeProviderKeyPolicy } from "./drivers/acp/opencode-go.ts";
-import { liveAppRows, openCardRows, readMessageText, recallMessages, recentMessages, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing, logNotification, lastRowAt, threadsWithCardsSince } from "./message-db.ts";
+import { liveAppRows, openCardRows, readMessageText, recallMessages, recentMessages, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing, logNotification, lastRowAt, threadsWithCardsSince, getInboxTask, getInboxTaskBySend, listInboxTasks, updateInboxTask } from "./message-db.ts";
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
 import { parseSince, parseUntil, recentWork, recentWorkPrompt, turnOutcomeLine } from "./recent-work.ts";
 import { chiefEscalationsEnabled, NEEDS_INPUT_GATE, peerApprovalGate, RAISED_GATE } from "./escalations.ts";
@@ -1912,11 +1912,27 @@ const directTurnDispatchClaims = new Map<string, DirectTurnDispatchClaim>();
 const directTurnGenerationByThread = new Map<string, string>();
 // Latest direct request per thread, kept past Stop until completion or failure cleanup; unknown continuations deliberately lose proof.
 const directRequestOwners = new Map<string, {
-  generation: string; messageId?: string; generations: Set<string>; turnId: string | null; stopped?: boolean;
+  generation: string; messageId?: string; inboxTaskId?: string; inboxTurnCompleted?: boolean; generations: Set<string>; turnId: string | null; stopped?: boolean;
   automation?: RoutineRunTrigger;
   origin?: WorkOrigin; personLine?: true; kind?: TurnKind;
   gmailDrafts?: Set<string>;
 }>();
+
+function inboxTaskTerminal(status: NonNullable<ReturnType<typeof getInboxTask>>["status"]): boolean {
+  return status === "replied" || status === "failed" || status === "stopped" || status === "interrupted";
+}
+
+function patchOpenInboxTask(id: string | undefined, patch: Parameters<typeof updateInboxTask>[1]): void {
+  if (!id) return;
+  const task = getInboxTask(id);
+  if (!task || inboxTaskTerminal(task.status)) return;
+  updateInboxTask(id, patch);
+  announceInboxTasks();
+}
+
+function announceInboxTasks(): void {
+  if (inboxTasksEnabled()) broadcast({ kind: "inbox-tasks.changed" }, { adminOnly: true });
+}
 
 const gmailDrafts = createGmailDrafts({ node: (id) => coordinator.node(id), ended: (status) => ENDED.has(status as HandoffView["status"]), owner: (threadId) => directRequestOwners.get(threadId) });
 type DirectTurnOutcome = HostTurnResult;
@@ -2262,6 +2278,15 @@ async function interruptDirectThread(botId: string, threadId: string, cause?: st
   const requestOwner = directRequestOwners.get(threadId);
   if (requestOwner) {
     requestOwner.stopped = true;
+    if (requestOwner.inboxTaskId) {
+      const partial = store.activePath(threadId).findLast(message => message.role === "bot" &&
+        message.kind === "text" && message.requestMessageId === requestOwner.messageId);
+      patchOpenInboxTask(requestOwner.inboxTaskId, {
+        status: cause ? "interrupted" : "stopped", cardMessageId: null,
+        ...(partial ? { resultMessageId: partial.id } : {}),
+        ...(cause ? { reason: redactSecretsInText(cause).slice(0, 240) } : {}),
+      });
+    }
     if (requestOwner.messageId) store.patchMessage(threadId, requestOwner.messageId, { requestCancelled: true });
   }
   stopParkedCards(threadId);
@@ -3878,6 +3903,11 @@ function followupAtBoot(threadId: string): "dispatched" | "pending" | undefined 
   return bootFollowups.get(threadId);
 }
 const followupEndedRoots = new Map<string, string | undefined>();
+let bootInboxExecutions: ReadonlyMap<string, string> | undefined;
+function inboxExecutionsAtBoot(): ReadonlyMap<string, string> {
+  return bootInboxExecutions ??= new Map(listInboxTasks().filter(task =>
+    Boolean(task.executionId) && !inboxTaskTerminal(task.status)).map(task => [task.threadId, task.botId]));
+}
 
 const askCards = createAskCards({ store, node: (id) => coordinator.node(id), delegatorOf, notify, answerCard: respondToCard, answerNode: (id, text) => coordinator.answerNode(id, text),
   answeredIn: (threadId, requestId) => automationReports.answeredIn(teamMessages.inbox.answeredIn(threadId, requestId), requestId), live: (threadId, requestId) => askMessageByRequest.has(`${threadId}:${requestId}`),
@@ -3889,6 +3919,7 @@ const questionRouting = createQuestionRouting({ store, active: () => coordinator
   steer: async (threadId, text) => canSteerThread(threadId) && (await steerThread(threadId, text)) !== "refused", mayReach: outsideLineage.mayReach });
 const handoffTicks = createHandoffTicks(), coordinator: Coordinator = createCoordinator({
   dataDir: DATA_DIR,
+  interruptOnRestart: (threadId, botId) => inboxExecutionsAtBoot().get(threadId) === botId,
   now: Date.now, wrote: handoffTicks.kick, handoffLimit: starterCaps.handoffs,
   log: line => console.error("coordinator:", line),
   legacyThreads: {
@@ -4498,6 +4529,7 @@ function pageIfThreadChanged(id: string, threadId: string) {
 store.onChange((change) => {
   if (change.type !== "message" && change.type !== "message.patch" && change.type !== "thread" && change.type !== "sections") forgetVisibility();
   if (change.type === "group.deleted") personRooms.reads?.forgetRoom(change.groupId);
+  if (change.type === "thread.deleted") announceInboxTasks();
   switch (change.type) {
     case "sections":
       broadcast({ kind: "sections", sections: store.sections });
@@ -4589,19 +4621,51 @@ function guardedRequestSnapshot(botId: string, threadId: string, sendId: string)
 function settleTrackedRequest(threadId: string, incoming: ReadonlySet<string> = new Set()): void {
   const owner = directRequestOwners.get(threadId);
   const bot = store.botByThread(threadId);
-  if (!owner?.messageId || owner.stopped || !bot || threadBusy(bot.id, threadId) || coordinator.parkedDirect(threadId)) return;
+  if (!owner?.messageId || owner.stopped || !bot || threadBusy(bot.id, threadId)) return;
+  const parked = coordinator.parkedDirect(threadId);
+  if (parked) {
+    const card = store.messagesFor(threadId).findLast((message) => parked.cards?.includes(message.id) || message.requestMessageId === owner.messageId && requestNeedsInput(message));
+    patchOpenInboxTask(owner.inboxTaskId, { status: "waiting-input", cardMessageId: card?.id ?? null });
+    return;
+  }
+  if (owner.inboxTaskId && directRootPending(threadId)) {
+    patchOpenInboxTask(owner.inboxTaskId, { status: "waiting-work", cardMessageId: null });
+    return;
+  }
   const newest = coordinator.all().filter(node => !node.parentId && node.threadId === threadId && owner.generations.has(node.id))
     .sort((a, b) => a.createdAt - b.createdAt).at(-1);
-  if (newest && newest.status !== "completed") return;
   const path = store.activePath(threadId).filter(message => !incoming.has(message.id));
-  const source = path.findLast(message => message.role === "user");
+  const source = path.findLast(message => message.role === "user" && (!owner.inboxTaskId || !message.steered));
   if (source?.id !== owner.messageId || source.requestCancelled || source.requestPending !== true) return;
   const messages = path.slice(path.indexOf(source) + 1);
+  if (newest && newest.status !== "completed") {
+    if (owner.inboxTaskId && ENDED.has(newest.status)) {
+      const partial = messages.findLast(message => message.role === "bot" && message.kind === "text" &&
+        message.requestMessageId === source.id);
+      const detail = newest.outcomeDetail ?? newest.result;
+      patchOpenInboxTask(owner.inboxTaskId, {
+        status: newest.status === "cancelled" ? "stopped" : "failed", cardMessageId: null,
+        ...(detail ? { reason: redactSecretsInText(detail).slice(0, 240) } : {}),
+        ...(partial ? { resultMessageId: partial.id } : {}),
+      });
+    }
+    return;
+  }
+  const pendingCard = messages.findLast(requestNeedsInput);
+  if (pendingCard) {
+    patchOpenInboxTask(owner.inboxTaskId, { status: "waiting-input", cardMessageId: pendingCard.id });
+    return;
+  }
   const terminal = messages.findLast(message => message.turnTerminal && message.role === "bot" && message.kind === "text");
-  if (messages.some(requestNeedsInput) || terminal?.requestMessageId !== source.id || !terminal.turnSucceeded ||
+  if (owner.inboxTurnCompleted && (!terminal || terminal.turnId !== owner.turnId)) {
+    patchOpenInboxTask(owner.inboxTaskId, { status: "failed", reason: "The execution ended without a reply", cardMessageId: null });
+  }
+  if (terminal?.requestMessageId !== source.id || !terminal.turnSucceeded ||
       terminal.turnId !== owner.turnId || messages.findLast(message => message.turnId)?.turnId !== terminal.turnId ||
       messages.findLast(message => message.turnSucceeded !== undefined)?.turnSucceeded !== true) return;
-  store.patchMessage(threadId, source.id, { requestPending: false }); savedSteps.requestSettled({ botId: bot.id, threadId, request: source, reply: terminal, after: messages, generations: owner.generations, automated: !personRequest(owner) });
+  store.patchMessage(threadId, source.id, { requestPending: false });
+  patchOpenInboxTask(owner.inboxTaskId, { status: "replied", resultMessageId: terminal.id, cardMessageId: null });
+  savedSteps.requestSettled({ botId: bot.id, threadId, request: source, reply: terminal, after: messages, generations: owner.generations, automated: !personRequest(owner) });
 }
 
 interface SseClient {
@@ -4758,7 +4822,10 @@ function memberFrame(client: SseClient, seq: number, payload: Record<string, unk
   if (!narrowed) return null;
   return narrowed === payload ? clientFrame : `id: ${STREAM_ID}:${seq}\ndata: ${JSON.stringify({ ...narrowed, seq })}\n\n`;
 }
-onSteeredQueueChange(() => broadcast({ kind: "bot.queued", queues: publicBotQueuedMessages() }));
+onSteeredQueueChange(() => {
+  broadcast({ kind: "bot.queued", queues: publicBotQueuedMessages() });
+  announceInboxTasks();
+});
 
 // Keyed by threadId: provider item and request ids are unique only within a thread.
 const toolMessageByItem = new Map<string, string>();
@@ -5000,6 +5067,9 @@ const watchdog = new TurnWatchdog({
     if (bot && routineRun?.target !== "bot") {
       reportIncident({ kind: "stalled", bot, threadId: turn.threadId, detail: cause });
     }
+    patchOpenInboxTask(stalledProviderTurn?.inboxTaskId, {
+      status: "interrupted", reason: redactSecretsInText(cause).slice(0, 240), cardMessageId: null,
+    });
     settleDirectFollowup(stalledGeneration, { ok: false, text: stalled, stalled: true });
     turnUsage.delete(turn.threadId);
     turnContext.delete(turn.threadId);
@@ -6404,6 +6474,9 @@ bus.subscribe((event: RuntimeEvent) => {
   const liveTurnId = event.turnId ?? liveTurnByThread.get(event.threadId);
   switch (event.type) {
     case "turn.started":
+      if (requestOwner?.turnId && requestOwner.turnId === event.turnId) {
+        patchOpenInboxTask(requestOwner.inboxTaskId, { status: "running", cardMessageId: null });
+      }
       turnStartedAt.set(event.threadId, Date.now());
       // A stop that never saw its turn.completed must not pass for this turn.
       stoppedTurns.delete(event.threadId); personStops.turnStarted(event.threadId, event.turnId);
@@ -6417,6 +6490,11 @@ bus.subscribe((event: RuntimeEvent) => {
     case "item.completed":
       if (event.itemType === "assistant_text") {
         pushAssistantText(event.text, event.turnId);
+        if (requestOwner?.turnId && requestOwner.turnId === event.turnId && event.text.trim()) {
+          patchOpenInboxTask(requestOwner.inboxTaskId, {
+            progress: { text: redactSecretsInText(event.text.trim()).slice(0, 160), at: Date.now() },
+          });
+        }
       } else if (event.itemType === "assistant_image") {
         try {
           const decoded = decodeGeneratedImage(event.data);
@@ -6447,6 +6525,11 @@ bus.subscribe((event: RuntimeEvent) => {
             tool: { ...existing, name: toolName, ok: event.ok, output: event.output === undefined ? undefined : scrubHeldSecrets(event.output) },
           });
           toolMessageByItem.delete(itemKey);
+        }
+        if (requestOwner?.turnId && requestOwner.turnId === liveTurnId && messageId) {
+          patchOpenInboxTask(requestOwner.inboxTaskId, {
+            progress: { text: redactSecretsInText(toolName).slice(0, 160), at: Date.now() },
+          });
         }
         // Only computer tools change the screen, and each capture competes with the agent for the Boat's command endpoint.
         if (bot) {
@@ -6606,8 +6689,10 @@ bus.subscribe((event: RuntimeEvent) => {
       if (asker) {
         const card = store.messagesFor(event.threadId).find((candidate) => candidate.id === message.id)?.card;
         if (card && !card.answered) {
-          if (bot) store.setTaskActivity(bot.id, event.threadId, "waiting-on-you");
-          else if (asker.busy) store.setActivity(asker.id, "waiting-on-you");
+          if (bot) {
+            store.setTaskActivity(bot.id, event.threadId, "waiting-on-you");
+            patchOpenInboxTask(requestOwner?.inboxTaskId, { status: "waiting-input", cardMessageId: message.id });
+          } else if (asker.busy) store.setActivity(asker.id, "waiting-on-you");
           if (event.requestId) askCards.showWaitingOnPersonChip(event.threadId, event.requestId, asker, permission ? "approval" : "answer");
           const notificationBot = (routineRun && routineSourceOwner(routineRun)?.bot) || asker;
           notify(buildNotification(
@@ -6626,6 +6711,7 @@ bus.subscribe((event: RuntimeEvent) => {
       const waiting = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
       if (bot && turnWaitedOnPerson(store.taskByThread(bot.id, event.threadId))) {
         store.setTaskActivity(bot.id, event.threadId, "working");
+        patchOpenInboxTask(requestOwner?.inboxTaskId, { status: "running", cardMessageId: null });
       } else if (!bot && turnWaitedOnPerson(waiting)) store.setActivity(waiting.id, "working");
       const messageId = event.requestId ? askMessageByRequest.get(`${event.threadId}:${event.requestId}`) : null;
       if (messageId) {
@@ -6684,6 +6770,9 @@ bus.subscribe((event: RuntimeEvent) => {
       const clientStopped = personStops.stopped(event.threadId, completedTurnId) || (stoppedTurns.has(event.threadId)
         && (stoppedTurnId === undefined || completedTurnId === undefined || stoppedTurnId === completedTurnId));
       const stopped = event.stopReason === "interrupted" || clientStopped;
+      if (requestOwner?.inboxTaskId && completedTurnId && requestOwner.turnId === completedTurnId && event.ok && !stopped) {
+        requestOwner.inboxTurnCompleted = true;
+      }
       landParkedFiles();
       if (completedTurnId) {
         const terminal = store.markTerminalAssistantMessage(event.threadId, completedTurnId);
@@ -6708,6 +6797,15 @@ bus.subscribe((event: RuntimeEvent) => {
       const failed = !event.ok && !stopped && !lazyClaimAlreadyReported && !computerParked && !capContinues && !routineRun && !activeRoutineRunForThread(event.threadId);
       const broken = failed && !coordinator.assignerOf(event.threadId) ? bot ?? (speaker ? store.bot(speaker.botId) : undefined) : undefined;
       const failureDetail = turnStops.failureCause(event) ?? "the run ended without a result";
+      if (failed || stopped) {
+        const partial = store.activePath(event.threadId).findLast((line) => line.role === "bot" && line.kind === "text" &&
+          line.requestMessageId === requestOwner?.messageId && line.turnId === completedTurnId);
+        patchOpenInboxTask(requestOwner?.inboxTaskId, {
+          status: failed ? "failed" : clientStopped ? "stopped" : "interrupted",
+          ...(failed ? { reason: redactSecretsInText(failureDetail).slice(0, 240) } : {}),
+          ...(partial ? { resultMessageId: partial.id } : {}), cardMessageId: null,
+        });
+      }
       // Filed once the thread has settled, so the Chief's retry finds it free. A turn the person stopped is cancelled, whatever its engine said.
       const facts = { ...turnStops.read(event.threadId, event.turnId)?.flags, stopReason: directRequestOwners.get(event.threadId)?.stopped ? "cancelled" : event.stopReason };
       const held = facts.limit ?? (signedOutStop(facts.stopReason, failureDetail) ? "signed-out" as const : undefined); // a limit or a sign-out: one incident a stretch, the person told by its own notice
@@ -6744,10 +6842,10 @@ bus.subscribe((event: RuntimeEvent) => {
           directTurnBots.delete(event.threadId);
           if (continueComputerSelection(event.threadId, generation, event.ok)) return;
           // An asynchronous screenshot finishes after the bus subscribers that normally drain have run.
+          settleTrackedRequest(event.threadId);
           if (resumeQueued) {
             drainQueuedSends();
           }
-          settleTrackedRequest(event.threadId);
         };
         const tokens = event.usage ?? lastReported;
         const routedModel = quickFallback.routedModel(event.threadId);
@@ -7134,8 +7232,12 @@ function drainQueuedSendsNow() {
       void startTurn(botId, prompt, {
         threadId, userMessage, excludeMessageIds: excludeIds, unattended, onTurnSettled: resolve, allowRoomTurnElsewhere: !head.peerAsk,
         trigger: queuedTurnTrigger(head), ...(head.origin ? { origin: head.origin } : {}), ...(head.mentions ? { mentions: head.mentions } : {}),
+        onDispatchError: (why) => patchOpenInboxTask(head.inboxTask ? userMessage.queueId : undefined, {
+          status: "failed", reason: redactSecretsInText(why).slice(0, 240),
+        }),
       }).catch((err) => {
         const why = err instanceof Error ? err.message : String(err);
+        patchOpenInboxTask(head.inboxTask ? userMessage.queueId : undefined, { status: "failed", reason: redactSecretsInText(why).slice(0, 240) });
         const chief = head.peerAsk?.incident ? store.bot(botId) : null;
         if (chief) incidentRefused(chief, threadId, store.activePath(threadId).filter(line => excludeIds.includes(line.id)).map(line => line.peerAsk), why);
         else store.appendMessage(threadId, {
@@ -7149,23 +7251,26 @@ function drainQueuedSendsNow() {
     }),
     // Provider completion can precede its dispatch promise: keep the queue until that exact handshake releases its claim.
     (botId, threadId, head) => threadBusy(botId, threadId) || botAtThreadCapacity(botId, head.peerAsk ? undefined : threadId, Boolean(head.peerAsk)) || roomTurnHolds(activeGroupTurnForBot(botId), threadId, !head.peerAsk)
-      || directRootQueued(threadId) || (!head.peerAsk?.incident && parksBehindCoordination(botId, threadId)),
+      || directRootQueued(threadId) || (!head.peerAsk?.incident && parksBehindCoordination(botId, threadId))
+      || (head.inboxTask === true && (Boolean(coordinator.parkedDirect(threadId)) || coordinator.awaitingTeammateThreads().has(threadId))),
   );
 }
 
-async function startOrQueueDirectMessage(botId: string, threadId: string, text: string, replyTo?: ReplyTarget, sendId?: string, sender?: ResolvedSender, trigger?: UsageTrigger, via?: "call", callId?: string, dataContext?: DataContext, app?: { context?: string; fromApp?: Message["fromApp"]; pointed?: Message["pointed"] }, mentions?: string[]) {
+async function startOrQueueDirectMessage(botId: string, threadId: string, text: string, replyTo?: ReplyTarget, sendId?: string, sender?: ResolvedSender, trigger?: UsageTrigger, via?: "call", callId?: string, dataContext?: DataContext, app?: { context?: string; fromApp?: Message["fromApp"]; pointed?: Message["pointed"] }, mentions?: string[], inboxTask = false) {
   const decision = admit("direct", {}, {
     atCapacity: botAtThreadCapacity(botId, threadId),
     threadBusy: threadBusy(botId, threadId),
     groupTurn: roomTurnHolds(activeGroupTurnForBot(botId), threadId, true),
     parksBehindCoordination: parksBehindCoordination(botId, threadId),
   });
-  if (decision.action === "queue") {
+  if (inboxTask || decision.action === "queue") {
+    const reason = decision.action === "queue" ? decision.reason : undefined;
     const queued = queueSteeredMessage(botId, threadId, text, {
+      inboxTask,
       replyToId: replyTo?.id,
       sendId,
-      dataContext, fromApp: app?.fromApp, mentions,
-      reason: decision.reason,
+      dataContext, fromApp: app?.fromApp, pointed: app?.pointed, mentions,
+      reason,
       prompt: (app?.context ?? "") + personPrompt(threadId, sender, promptWithReply(promptWithDataContext(text, dataContext), replyTo, userNameFor(threadId))),
       sender,
       trigger,
@@ -7173,10 +7278,12 @@ async function startOrQueueDirectMessage(botId: string, threadId: string, text: 
       callId,
       reaction: replyTo?.reactedWith,
     });
-    return { ok: true as const, queued: true as const, queueId: queued.id, threadId, reason: decision.reason, why: waitWords.queued(threadId, decision.reason) };
+    if (inboxTask) queueMicrotask(drainQueuedSends);
+    return { ok: true as const, queued: true as const, queueId: queued.id, threadId, reason,
+      ...(inboxTask ? { taskId: queued.id } : {}), why: waitWords.queued(threadId, reason) };
   }
   const message = await startTurn(botId, text, { threadId, replyTo, sendId, sender, trigger, via, callId, dataContext, app, mentions, allowRoomTurnElsewhere: true });
-  return { ok: true as const, threadId, message };
+  return { ok: true as const, threadId, message, queued: undefined };
 }
 
 class DirectSendRefused extends Error {
@@ -7205,17 +7312,18 @@ async function acceptDirectSend(
   input: DirectSendInput,
   guardedStart?: (currentAtStart: BotRecord) => Promise<DirectSendReceipt>,
 ): Promise<DirectSendReceipt> {
-  const { botId, threadId, text, sendId, replyTo, sender, trigger, via, callId, dataContext, personPresent, app, followUp, mentions } = input;
+  const { botId, threadId, text, sendId, replyTo, sender, trigger, via, callId, dataContext, personPresent, app, followUp, mentions, inboxTask, inboxSteer } = input;
   const refused = directSendRefusal(botId, threadId);
   if (refused) throw refused;
   return sendSequencer.run(
     sendId ? `bot:${botId}:${threadId}:${sendId}` : undefined,
-    sendFingerprint(text, replyTo?.id),
+    JSON.stringify([sendFingerprint(text, replyTo?.id), inboxTask === true, inboxSteer ?? null]),
     async (): Promise<DirectSendReceipt> => {
       if (sendId) {
         if (cancelledChatFollowup("bot", botId, threadId, sendId)) {
           throw Object.assign(new Error("this queued sendId was cancelled; send a new message to try again"), { status: 409 });
         }
+        const task = getInboxTaskBySend(threadId, sendId);
         const accepted = acceptedSendMatch(store.messagesFor(threadId), sendId, text, replyTo?.id);
         if (accepted.kind === "conflict") {
           throw Object.assign(new Error("sendId already belongs to another message"), { status: 409 });
@@ -7225,6 +7333,7 @@ async function acceptDirectSend(
             ok: true as const,
             threadId,
             message: accepted.message,
+            ...(task && task.id === accepted.message.queueId ? { taskId: task.id } : {}),
           };
           return accepted.message.steered
             ? { ...canonical, steered: true as const }
@@ -7235,8 +7344,10 @@ async function acceptDirectSend(
           if (queued.text !== text || queued.replyToId !== replyTo?.id) {
             throw Object.assign(new Error("sendId already belongs to another message"), { status: 409 });
           }
-          return { ok: true as const, queued: true as const, queueId: queued.id, threadId, reason: queued.reason, why: waitWords.queued(threadId, queued.reason) };
+          return { ok: true as const, queued: true as const, queueId: queued.id, threadId, reason: queued.reason, why: waitWords.queued(threadId, queued.reason),
+            ...(task?.id === queued.id ? { taskId: queued.id } : {}) };
         }
+        if (task) throw Object.assign(new Error("this task already has a durable receipt"), { status: 409, taskId: task.id });
       }
 
       // Provider discovery yields, probes afresh for an engine installed or signed in since, and reads a thread's own model's engines at start before it may give way; the transcript reservation after these checks must stay synchronous.
@@ -7255,9 +7366,19 @@ async function acceptDirectSend(
       }
 
       if (guardedStart) return guardedStart(currentAtStart);
+      const supplementOwner = followUp === "steer" ? directRequestOwners.get(threadId) : undefined;
+      if (followUp === "steer" && currentAtStart.busy && supplementOwner?.inboxTaskId && !inboxSteer) {
+        throw new DirectSendRefused(409, { error: "Choose the task that should receive the supplement" });
+      }
+      if (inboxSteer && (!currentAtStart.busy || supplementOwner?.inboxTaskId !== inboxSteer || supplementOwner.stopped)) {
+        throw new DirectSendRefused(409, { error: "The task is no longer accepting a supplement" });
+      }
 
       const typedStop = await stopOnTypedCommand({ botId, threadId, text, trigger, personPresent, fromApp: Boolean(app), busy: currentAtStart.busy === true, row: { replyToId: replyTo?.id, sendId, sender, ...spokenLineFields(via, callId) } });
       if (typedStop) return typedStop;
+      if (inboxTask) {
+        return startOrQueueDirectMessage(botId, threadId, text, replyTo, sendId, sender, trigger, via, callId, dataContext, app, mentions, true);
+      }
       if (currentAtStart.busy) {
         const personsOwn = personPresent && !app && (trigger.kind === "user" || trigger.kind === "owner"), queuedPrompt = (app?.context ?? "") + personPrompt(threadId, sender, promptWithReply(promptWithDataContext(text, dataContext), replyTo, userNameFor(threadId)));
         const instance = runningTurnInstance(currentAtStart, threadId);
@@ -7275,6 +7396,9 @@ async function acceptDirectSend(
         // A chosen wait (queue, or restart's Stop) is never cut short by person-first.
         const chose = busyAdmission.action === "queue" ? busyAdmission.chose : undefined;
         if (busyAdmission.action === "steer" && instance?.adapter.steer) {
+          if (inboxSteer && (directRequestOwners.get(threadId) !== supplementOwner || !threadBusy(botId, threadId))) {
+            throw new DirectSendRefused(409, { error: "The task is no longer accepting a supplement" });
+          }
           const prompt = (app?.context ?? "") + personPrompt(threadId, sender, promptWithReply(promptWithDataContext(steerInput.text, dataContext), replyTo, userNameFor(threadId)));
           steered = await (steerInput.images.length > 0
             ? instance.adapter.steer(threadId, prompt, steerInput.images)
@@ -7283,6 +7407,12 @@ async function acceptDirectSend(
         }
         // steer() awaits the adapter: re-check ownership before appending, or a late acknowledgement writes into a task the bot no longer owns.
         const current = store.projectBotForTask(botId, threadId);
+        if (inboxSteer && (steered === "refused" || !current?.busy || directRequestOwners.get(threadId) !== supplementOwner)) {
+          throw new DirectSendRefused(409, {
+            error: steered === "refused" ? "The running task could not accept a supplement" : "The task ended before the supplement was confirmed",
+            ...(steered !== "refused" ? { steerUncertain: true } : {}),
+          });
+        }
         if (!current) throw Object.assign(new Error("no such bot"), { status: 404 });
         if (!store.taskByThread(botId, threadId)) {
           throw Object.assign(new Error("the target task no longer exists"), { status: 409 });
@@ -7311,8 +7441,8 @@ async function acceptDirectSend(
           store.setTaskAskedAt(botId, threadId, message.at);
           handoffs.steered(threadId, steerTarget, instance?.instanceId, message.id);
           signInSettle.answerInChat(botId, threadId);
-          if (personsOwn) personFirst.wait(threadId, { requeue: (note) => void queueSteeredMessage(current.id, threadId, text, { prompt: note ? `${queuedPrompt}\n\n${note}` : queuedPrompt, rowId: message.id, first: true, queuedAt: message.at, replyToId: replyTo?.id, dataContext, sender, trigger, via, callId, mentions }) });
-          return { ok: true as const, steered: true as const, threadId, message };
+          if (personsOwn && !inboxSteer) personFirst.wait(threadId, { requeue: (note) => void queueSteeredMessage(current.id, threadId, text, { prompt: note ? `${queuedPrompt}\n\n${note}` : queuedPrompt, rowId: message.id, first: true, queuedAt: message.at, replyToId: replyTo?.id, dataContext, sender, trigger, via, callId, mentions }) });
+          return { ok: true as const, steered: true as const, threadId, message, ...(inboxSteer && steered === "indeterminate" ? { steerUncertain: true as const } : {}) };
         }
         if (!current.busy) {
           return startOrQueueDirectMessage(botId, threadId, text, replyTo, sendId, sender, trigger, via, callId, dataContext, app, mentions);
@@ -7723,7 +7853,11 @@ async function beginTurn(
     (requestMessageId ? previousRequest.messageId === requestMessageId : opts?.cardContinuation) ? previousRequest.origin : undefined;
   const requestOrigin = requestWorkOrigin({ trigger: opts?.automationSource, guest: guestConfined, handed: opts?.origin, continued,
     line: !continuation && requestMessageId === userMessage.id ? userMessage : undefined });
-  directRequestOwners.set(threadId, { generation: dispatchClaimId, messageId: requestMessageId,
+  const inboxTaskId = requestMessageId && previousRequest?.messageId === requestMessageId
+    ? previousRequest.inboxTaskId
+    : !continuation && userMessage.queueId && getInboxTask(userMessage.queueId) ? userMessage.queueId : undefined;
+  patchOpenInboxTask(inboxTaskId, { sourceMessageId: requestMessageId, executionId: dispatchClaimId });
+  directRequestOwners.set(threadId, { generation: dispatchClaimId, messageId: requestMessageId, inboxTaskId,
     gmailDrafts: opts?.coordination ? gmailDrafts.forNode(opts.coordination.id) :
       continuation && previousRequest && !previousRequest.stopped && (!requestMessageId || previousRequest.messageId === requestMessageId)
         ? previousRequest.gmailDrafts ?? new Set<string>() : new Set<string>(),
@@ -11727,6 +11861,7 @@ function configStatus() {
   const eventLogMaxBytes = threadEventLogMaxBytes(cfg);
   const eventLogRetentionDays = threadEventLogRetentionDays(cfg);
   return {
+    inboxTasks: inboxTasksEnabled(),
     cloudStarter: cloudPlanTier.starter(), botLimit: botLimit.limit(), waitingForRoom: engineMemory.waiting(), planTurns: starterCaps.status(), awakeLimit: starterAwake.limit(), pausedBots: starterAwake.paused(), xai: keyStatus(cfg.xai?.key),
     mistral: keyStatus(cfg.mistral?.key),
     cerebras: keyStatus(cfg.cerebras?.key),
@@ -11815,6 +11950,7 @@ function configForAccess(status: ReturnType<typeof configStatus>, admin: boolean
   // Client sessions get configured-or-not only: no SSH alias, email, browser partition id or sign-in list.
   return {
     ...withoutKeyHints(status),
+    inboxTasks: false,
     edition: { edition: status.edition.edition, features: status.edition.features },
     signIn: { admins: [], members: [] }, live: liveSettingsForClient(status.live), everyBotRules: undefined,
     vps: { configured: status.vps.configured, sshAlias: "" },
@@ -12093,12 +12229,36 @@ ROUTES.push(createBotPresetRoutes({ presets: presetStore, orgStatuses: orgInstal
 ROUTES.push(createSharedComputerRoutes({ enabled: (auth) => lendingEnabled() || (ownerLends() && ownHome.owner(auth)), computers: sharedComputers, sessionLive: (id) => sessions.isLive(id), environmentId: ENVIRONMENT_ID,
   cloudHomeLender: CLOUD_HOME ? CLOUD_HOME_LENDER : null, principal: sessionLendingPrincipal, personKey, power: () => cloudPower, links: CLOUD_HOME ? deviceLinks : null, upgrades, asks: computerAsks?.asks ?? null, answerer: cardAnswererFor }));
 // `routines` is assigned at boot, so it is read per request.
+function inboxTasksEnabled(): boolean {
+  return !CLOUD_HOME && !HOSTED_WORKSPACE;
+}
+
+ROUTES.push(async ({ res, path, method, auth, json }) => {
+  const result = /^\/api\/inbox\/tasks\/([\w-]+)\/read$/.exec(path);
+  if (path !== "/api/inbox/tasks" && !result) return PASS;
+  if (!inboxTasksEnabled() || !ownerOrAdmin(auth)) return json(res, 404, { error: "Task inbox is unavailable" });
+  if (!result && method === "GET") {
+    return json(res, 200, { tasks: listInboxTasks().filter(task => store.taskByThread(task.botId, task.threadId)) });
+  }
+  if (result && method === "POST") {
+    const task = getInboxTask(result[1]);
+    if (!task || !store.taskByThread(task.botId, task.threadId)) return json(res, 404, { error: "No such inbox task" });
+    if (!inboxTaskTerminal(task.status)) return json(res, 409, { error: "The task has no result yet" });
+    if (task.seenAt === undefined) {
+      updateInboxTask(task.id, { seenAt: Date.now() });
+      announceInboxTasks();
+    }
+    return json(res, 200, { ok: true });
+  }
+  return json(res, 405, { error: "method not allowed" });
+});
+
 ROUTES.push(createBotMessageRoutes({
   store, registry, handoffs, liveTurn: (threadId) => liveTurns.running(threadId), phoneSecretSubmissions, directTurnDispatchClaims, groupSpeakers,
   routines: () => routines,
   hasRememberedCommands: (botId) => commandAllowlist.list(botId).length > 0,
   fromPhone: phones.fromPhone, notePhoneSend: phones.noteSend,
-  desktopManaged: DESKTOP_MANAGED, cloudHome: Boolean(CLOUD_HOME), DirectSendRefused,
+  desktopManaged: DESKTOP_MANAGED, cloudHome: Boolean(CLOUD_HOME), inboxTasks: inboxTasksEnabled(), DirectSendRefused,
   acceptDirectSend, directSendRefusal, startTurn, usageTriggerFor, messageSender, cloudGuestSendRefusal, cloudThreadRefusal, resolveAccessRequest: (threadId, requestId, behavior, message) => lendingLifts?.resolve(threadId, requestId, behavior) ?? accessRequests.resolve(threadId, requestId, behavior, message), relayRefusal: CLOUD_TEAM ? (bot, email) => relayedSendRefusal(bot, email, Boolean(email && teamOwners.people?.list().some((one) => one.email === email && one.role !== "member"))) : undefined,
   noAiRefusal: noAiNotice.refusal, cardAnswerRefusal, commandRememberRefusal, requestBehavior, requestedTaskBot, botForThread, threadBusy,
   botAtThreadCapacity, parksBehindCoordination, activeGroupTurnForBot, runningTurnInstance, engineSteersImages, resolveReplyTarget,
@@ -15434,7 +15594,22 @@ workspaceAccessTimer?.unref();
 console.log(describeBrand(loadBrand()));
 
 // Before any row below settles: an interrupted dispatch's words come back with a review notice, never to a model a second time.
+function recoverInboxTask(id: string, threadId: string, source: Message | undefined): boolean {
+  const task = getInboxTask(id);
+  if (!task || inboxTaskTerminal(task.status)) return task?.status === "replied";
+  const outputs = source ? store.messagesFor(threadId).filter(message => message.requestMessageId === source.id &&
+    message.role === "bot" && message.kind === "text") : [];
+  const result = source?.requestPending === false && outputs.findLast(message => message.turnTerminal && message.turnSucceeded);
+  const partial = outputs.findLast(message => Boolean(message.text?.trim() || message.attachments?.length));
+  patchOpenInboxTask(id, {
+    status: result ? "replied" : "interrupted", sourceMessageId: source?.id,
+    resultMessageId: (result || partial)?.id, cardMessageId: null,
+  });
+  return Boolean(result);
+}
+
 followupAtBoot("");
+inboxExecutionsAtBoot();
 for (const row of chatFollowups()) {
   if (row.kind === "aside") { settleChatFollowups([row.id], null); continue; }
   if (row.status !== "dispatching" && row.status !== "interrupted") continue;
@@ -15447,6 +15622,7 @@ for (const row of chatFollowups()) {
   const recovered = messages.find((message) => message.queueId === row.id && message.role === "user") ?? store.appendMessage(row.threadId, {
     role: "user", kind: "text", text: row.payload.text, replyToId: row.payload.replyToId,
     sendId: row.payload.sendId, queueId: row.id, sender: row.payload.sender,
+    ...(row.payload.pointed ? { pointed: row.payload.pointed } : {}),
     ...(row.kind === "channel" ? { channelMode: row.payload.mode, via: row.payload.via } : {}),
     ...(row.kind === "bot" ? spokenLineFields(row.payload.via, row.payload.callId) : {}),
   });
@@ -15455,13 +15631,19 @@ for (const row of chatFollowups()) {
   for (const [instanceId, state] of Object.entries(recoveredTask?.handedMessages ?? {})) {
     if (state.session !== undefined) store.setHandedMessages(row.ownerId, row.threadId, instanceId, recordHanded(state, order, [recovered.id]));
   }
-  if (!messages.some((message) => message.queueId === row.id && message.kind === "activity")) {
+  const alreadyReplied = row.payload.inboxTask && recoverInboxTask(row.id, row.threadId, recovered);
+  if (!alreadyReplied && !messages.some((message) => message.queueId === row.id && message.kind === "activity")) {
     store.appendMessage(row.threadId, {
       role: "bot", kind: "activity", queueId: row.id,
       tool: noticeTool("chat.notice.followupInterrupted", undefined, { ok: false }),
     });
   }
   settleChatFollowups([row.id], null);
+}
+for (const task of listInboxTasks()) {
+  if (!task.executionId || inboxTaskTerminal(task.status)) continue;
+  const source = store.messagesFor(task.threadId).find(message => message.id === task.sourceMessageId);
+  recoverInboxTask(task.id, task.threadId, source);
 }
 restoreSteeredMessages();
 restoreChannelMessages();

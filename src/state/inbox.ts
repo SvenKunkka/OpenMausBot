@@ -4,6 +4,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { InboxRow, InboxView } from "../../shared/inbox";
 import { api } from "./api";
+import { refreshInboxTasks } from "./inbox-tasks";
 import { randomUuid } from "../lib/random-uuid";
 
 type InboxTaskLike = { threadId: string; inbox?: true; openAsks?: number; inboxChangedAt?: number };
@@ -136,6 +137,7 @@ export const currentInboxPanel = panel.get;
 export function openInbox(at: { reading?: string } = {}): void {
   panel.set({ ...panel.get(), open: true, reading: at.reading ?? null });
   void refreshInbox();
+  void refreshInboxTasks();
 }
 export const closeInbox = (): void => panel.set({ ...panel.get(), open: false, reading: null });
 export const readInboxLine = (id: string | null): void => panel.set({ ...panel.get(), reading: id });

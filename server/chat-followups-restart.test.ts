@@ -130,23 +130,31 @@ it("survives a real server crash: queued sends keep receipts, cancellation and u
     const body = { text, threadId: bot.threadId, replyToId, sendId: "durable_bot_send_123456" };
     const queued = await asPairedPerson(`/api/bots/${bot.id}/messages`, body);
     expect(queued).toMatchObject({ queued: true, queueId: expect.any(String), reason: "capacity" });
-    const cancelledBody = { ...body, text: `${text}\n\nCancelled task`, sendId: "cancelled_bot_send_123456" };
+    const cancelledBody = { ...body, inboxTask: true, text: `${text}\n\nCancelled task`, sendId: "cancelled_bot_send_123456" };
     const cancelled = await api("POST", `/api/bots/${bot.id}/messages`, cancelledBody, 202);
     await api("DELETE", `/api/bots/${bot.id}/queue/${cancelled.queueId}`, { threadId: bot.threadId });
 
     await api("POST", `/api/bots/${uncertain.id}/messages`, { threadId: uncertain.threadId, text: "Hold capacity" }, 202);
-    const uncertainBody = { threadId: later.threadId, text: "A possibly executed action", sendId: "uncertain_bot_send_123456" };
+    const uncertainBody = { threadId: later.threadId, inboxTask: true, text: "A possibly executed action", sendId: "uncertain_bot_send_123456" };
     const claimed = await api("POST", `/api/bots/${uncertain.id}/messages`, uncertainBody, 202);
     expect(claimed).toMatchObject({ queued: true, reason: "capacity" });
     writeFileSync(join(dataDir, `${uncertain.threadId}.gate`), "finish first task only");
     await expect.poll(() => prompts(later.threadId).length, { timeout: 15_000 }).toBe(1);
+
+    const survivorBody = { threadId: later.threadId, inboxTask: true, text: "A pending task survives", sendId: "surviving_inbox_send_123456" };
+    const survivor = await api("POST", `/api/bots/${uncertain.id}/messages`, survivorBody, 202);
+    expect(survivor).toMatchObject({ taskId: expect.any(String), queued: true });
+    expect((await api("GET", "/api/inbox/tasks")).tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: claimed.taskId, status: "running" }),
+      expect.objectContaining({ id: survivor.taskId, status: "queued" }),
+    ]));
 
     // Stop revokes provider credentials before the provider reports completion;
     // it must still retire the already-dispatched queue receipt exactly once.
     const stopped = (await api("POST", "/api/bots", { name: "Stopped follow-up" }, 201)).bot;
     const stoppedTask = (await api("POST", `/api/bots/${stopped.id}/tasks`, { title: "Stop this follow-up" }, 201)).task;
     await api("POST", `/api/bots/${stopped.id}/messages`, { threadId: stopped.threadId, text: "Hold capacity before Stop" }, 202);
-    const stoppedBody = { threadId: stoppedTask.threadId, text: "Stop this dispatched follow-up", sendId: "stopped_bot_send_123456" };
+    const stoppedBody = { threadId: stoppedTask.threadId, inboxTask: true, text: "Stop this dispatched follow-up", sendId: "stopped_bot_send_123456" };
     const stoppedReceipt = await api("POST", `/api/bots/${stopped.id}/messages`, stoppedBody, 202);
     expect(stoppedReceipt).toMatchObject({ queued: true, reason: "capacity" });
     writeFileSync(join(dataDir, `${stopped.threadId}.gate`), "release capacity for the stopped follow-up");
@@ -235,11 +243,37 @@ it("survives a real server crash: queued sends keep receipts, cancellation and u
       expect.objectContaining({ kind: "activity", tool: { name: expect.stringContaining("Review the result"), ok: false, nameCode: "chat.notice.followupInterrupted" } }),
     ]);
     expect((await api("POST", `/api/bots/${uncertain.id}/messages`, uncertainBody, 202)).message.queueId).toBe(claimed.queueId);
-    expect(prompts(later.threadId)).toHaveLength(1);
+    await expect.poll(async () => (await api("GET", "/api/inbox/tasks")).tasks, { timeout: 15_000 }).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: claimed.taskId, status: "interrupted" }),
+      expect.objectContaining({ id: survivor.taskId, status: "replied", resultMessageId: expect.any(String) }),
+    ]));
+    expect(prompts(later.threadId)).toHaveLength(2);
+    expect((await messages(later.threadId)).filter((message) => message.sendId === survivorBody.sendId)).toHaveLength(1);
+    await api("POST", `/api/inbox/tasks/${survivor.taskId}/read`);
+    const finishedBot = (await api("POST", "/api/bots", { name: "Result before inbox write" }, 201)).bot;
+    const finished = await api("POST", `/api/bots/${finishedBot.id}/messages`, {
+      threadId: finishedBot.threadId, inboxTask: true, text: "Recover my saved final reply", sendId: "recover_proven_inbox_12345",
+    }, 202);
+    const taskRow = async () => (await api("GET", "/api/inbox/tasks")).tasks.find((task: { id: string }) => task.id === finished.taskId);
+    await expect.poll(taskRow, { timeout: 15_000 }).toMatchObject({ status: "replied", resultMessageId: expect.any(String) });
+    const expectedResult = (await taskRow()).resultMessageId;
     await waitForExit(restarted, { signal: "SIGTERM" });
+    const beforeInboxCommit = new DatabaseSync(join(dataDir, "messages.db"));
+    try {
+      beforeInboxCommit.prepare("UPDATE inbox_tasks SET json = json_remove(json_set(json, '$.status', 'running'), '$.resultMessageId') WHERE id = ?")
+        .run(finished.taskId);
+    } finally { beforeInboxCommit.close(); }
     await restart();
+    expect(await taskRow()).toMatchObject({ status: "replied", resultMessageId: expectedResult });
+    expect(prompts(finishedBot.threadId)).toHaveLength(1);
     expect((await messages(later.threadId)).filter((message) => message.queueId === claimed.queueId)).toEqual(interrupted.filter((message) => message.queueId === claimed.queueId));
-    expect(prompts(later.threadId)).toHaveLength(1);
+    expect(prompts(later.threadId)).toHaveLength(2);
+    expect((await api("GET", "/api/inbox/tasks")).tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: claimed.taskId, status: "interrupted" }),
+      expect.objectContaining({ id: survivor.taskId, status: "replied", seenAt: expect.any(Number) }),
+      expect.objectContaining({ id: cancelled.taskId, status: "stopped" }),
+      expect.objectContaining({ id: stoppedReceipt.taskId, status: "stopped" }),
+    ]));
     evidence.push({ settled, channelSettled, journal: journal(), recoveredBot: await messages(bot.threadId), recoveredChannel: await messages(channel.threadId), interrupted });
   } finally {
     await waitForExit(restarted, { signal: "SIGTERM" });

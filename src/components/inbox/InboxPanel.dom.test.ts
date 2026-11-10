@@ -3,11 +3,17 @@ import { act, createElement, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const server = vi.hoisted(() => ({ calls: [] as Array<{ path: string; method: string; body?: unknown }>, view: null as null | { rows: Array<{ id: string; tab: string }> } }));
+const server = vi.hoisted(() => ({ calls: [] as Array<{ path: string; method: string; body?: unknown }>, view: null as null | { rows: Array<{ id: string; tab: string }> }, tasks: [] as InboxTask[], around: null as { messages: Array<{ id: string }> } | null }));
 vi.mock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => true }));
 vi.mock("../../state/api", () => ({
   api: vi.fn(async (path: string, init?: RequestInit) => {
     server.calls.push({ path, method: init?.method ?? "GET", ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) });
+    if (path === "/api/inbox/tasks") return { tasks: server.tasks };
+    if (/^\/api\/inbox\/tasks\/[\w-]+\/read$/.test(path)) return { ok: true };
+    if (path.startsWith("/api/threads/")) {
+      if (!server.around) throw new Error("Missing message");
+      return server.around;
+    }
     const done = /^\/api\/inbox\/([\w-]+)\/done$/.exec(path);
     if (done && server.view) server.view = { ...server.view, rows: server.view.rows.map((row) => (row.id === done[1] ? { ...row, tab: "done", unread: false } : row)) };
     return server.view;
@@ -18,6 +24,8 @@ import { initialState, StoreContext, type AppState, type Bot } from "@/state/sto
 import { BOT_BUTTON, botButtonTone } from "@/lib/bot-button";
 import { closeInbox, currentInboxPanel, inboxVersion, openInbox, setInboxView, useInboxLoader } from "@/state/inbox";
 import { approvalRow, inboxView, messageRow, questionRow, reportRow, settledRow } from "@/testing/inbox-fixture";
+import { refreshInboxTasks, setInboxTasksEnabled } from "@/state/inbox-tasks";
+import type { InboxTask } from "../../../shared/inbox-task";
 import type { InboxView } from "../../../shared/inbox";
 import { InboxCardSlot } from "./InboxCard";
 import { InboxPanel } from "./InboxPanel";
@@ -37,6 +45,8 @@ const shown = (view: InboxView) => { server.view = view; setInboxView(view); };
 beforeEach(() => {
   root = createRoot(document.body.appendChild(document.createElement("div")));
   server.calls.length = 0;
+  server.tasks = [];
+  server.around = null;
   dispatch.mockClear();
   shown(inboxView());
 });
@@ -44,6 +54,7 @@ afterEach(() => {
   act(() => root.unmount());
   closeInbox();
   setInboxView(null);
+  setInboxTasksEnabled(false);
   document.body.innerHTML = "";
   vi.unstubAllGlobals();
 });
@@ -76,6 +87,53 @@ describe("the inbox panel", () => {
     await click(`[data-inbox-row="${reportRow.id}"] [data-inbox-action="done"]`);
     expect(server.calls).toContainEqual({ path: `/api/inbox/${reportRow.id}/done`, method: "POST" });
     expect(document.querySelector(`[data-inbox-row="${reportRow.id}"]`), "it leaves the list at once").toBeNull();
+  });
+
+  it("starts at unread results and requests the exact historical reply before opening it", async () => {
+    const bot = { id: "bot", name: "Pepper", threadId: "current" } as Bot;
+    const task = (id: string, patch: Partial<InboxTask> = {}): InboxTask => ({
+      id, title: id, botId: bot.id, threadId: bot.threadId, sendId: id,
+      status: "replied", resultMessageId: `result-${id}`, createdAt: 1, updatedAt: 2, ...patch,
+    });
+    server.tasks = [task("first"), task("second"), task("failure", { status: "failed", resultMessageId: undefined, reason: "The engine stopped." }), task("active", { status: "running" })];
+    setInboxTasksEnabled(true);
+    await refreshInboxTasks();
+    openInbox();
+    await mount(createElement(InboxPanel), [bot]);
+    expect(document.querySelector('[data-inbox-task-tab="unread"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector('[data-inbox-task="active"]')).toBeNull();
+    await click('[data-inbox-task="failure"] button');
+    expect(document.querySelector('[data-inbox-task="failure"]')?.textContent).toContain("Open original chat");
+    expect(dispatch).not.toHaveBeenCalled();
+    await click('[data-inbox-task="first"] button');
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("Couldn't show the original message");
+    expect(document.querySelector('[data-inbox-task="first"]')?.hasAttribute("data-unread")).toBe(true);
+    expect(dispatch).not.toHaveBeenCalled();
+    server.around = { messages: [{ id: "result-second" }] };
+    await click('[data-inbox-task="second"] button');
+    expect(server.calls.some(({ path }) => path.includes("around=result-second"))).toBe(true);
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "focusMessage", threadId: "current", messageId: "result-second", inboxTaskId: "second" }));
+    expect(server.calls.some(({ method }) => method === "POST")).toBe(false);
+  });
+
+  it("refreshes an already selected conversation before focusing an approval", async () => {
+    const bot = { id: "bot", name: "Pepper", threadId: "current" } as Bot;
+    server.tasks = [{
+      id: "waiting", title: "Waiting", botId: bot.id, threadId: bot.threadId, sendId: "waiting",
+      status: "waiting-input", cardMessageId: "approval-card", createdAt: 1, updatedAt: 2,
+    }];
+    server.around = { messages: [{ id: "approval-card" }] };
+    setInboxTasksEnabled(true);
+    await refreshInboxTasks();
+    openInbox();
+    await mount(createElement(InboxPanel), [bot]);
+    await click('[data-inbox-task="waiting"] button');
+    const request = dispatch.mock.calls[0]?.[0];
+    expect(request).toMatchObject({ type: "switchTask", botId: bot.id, threadId: bot.threadId });
+    await act(async () => { request.onSwitched(); });
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      type: "focusMessage", threadId: bot.threadId, messageId: "approval-card",
+    }));
   });
 
   it("is a sheet at phone width", async () => {

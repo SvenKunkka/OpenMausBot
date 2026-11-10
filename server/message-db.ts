@@ -13,6 +13,7 @@ import { attentionSelect } from "./message-db-attention.ts";
 import { MessageSearchWorker } from "./message-search-worker.ts";
 import { searchMessagesInDatabase, type SearchHit } from "./message-search-query.ts";
 import type { Notification, NotificationLogEntry } from "../shared/notification.ts";
+import type { InboxTask } from "../shared/inbox-task.ts";
 export type { SearchHit } from "./message-search-query.ts";
 
 const DB_FILE = () => join(DATA_DIR, "messages.db");
@@ -76,6 +77,13 @@ function open(): DatabaseSync {
       payload TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS chat_followups_receipt ON chat_followups(kind, owner_id, thread_id, send_id);
+    CREATE TABLE IF NOT EXISTS inbox_tasks (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      send_id TEXT NOT NULL,
+      json TEXT NOT NULL,
+      UNIQUE (thread_id, send_id)
+    );
     CREATE TABLE IF NOT EXISTS command_receipts (
       kind TEXT NOT NULL,
       key TEXT NOT NULL,
@@ -218,11 +226,13 @@ export interface FollowupPayload {
   via?: "api" | "call";
   callId?: string;
   fromApp?: Message["fromApp"];
+  pointed?: Message["pointed"];
   sender?: ResolvedSender;
   trigger?: UsageTrigger;
   origin?: WorkOrigin;
   queuedAt?: number;
   rowId?: string; mentions?: string[];
+  inboxTask?: boolean;
 }
 export type FollowupStatus = "pending" | "dispatching" | "interrupted" | "cancelled";
 export interface ChatFollowup {
@@ -333,9 +343,21 @@ export function markNotificationLogRead(ids: readonly string[]): void {
 }
 
 export function saveChatFollowup(followup: Omit<ChatFollowup, "status">): void {
-  writeFollowups((connection) => connection.prepare(
-    "INSERT INTO chat_followups(id, kind, owner_id, thread_id, send_id, status, payload) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-  ).run(followup.id, followup.kind, followup.ownerId, followup.threadId, followup.payload.sendId ?? null, JSON.stringify(followup.payload)));
+  const { id, kind, ownerId, threadId, payload } = followup;
+  const { sendId } = payload;
+  writeFollowups((connection) => {
+    connection.prepare(
+      "INSERT INTO chat_followups(id, kind, owner_id, thread_id, send_id, status, payload) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+    ).run(id, kind, ownerId, threadId, sendId ?? null, JSON.stringify(payload));
+    if (!payload.inboxTask) return;
+    if (kind !== "bot" || !sendId) throw new Error("inbox tasks require a bot and a send ID");
+    const at = payload.queuedAt ?? Date.now();
+    const firstLine = payload.text.replace(/<attached-(?:image|file)\b[^>]*\/\s*>/g, "").trim().split(/\r?\n/, 1)[0];
+    const title = Array.from(firstLine).slice(0, 120).join("");
+    const task: InboxTask = { id, botId: ownerId, threadId, sendId, title, status: "queued", createdAt: at, updatedAt: at };
+    connection.prepare("INSERT INTO inbox_tasks(id, thread_id, send_id, json) VALUES (?, ?, ?, ?)")
+      .run(id, threadId, sendId, JSON.stringify(task));
+  });
 }
 
 /** Cancellation tombstones remain so a retried sendId cannot resurrect a dispatch. */
@@ -347,11 +369,44 @@ export function settleChatFollowups(ids: string[], status: FollowupStatus | null
       : status === "cancelled"
         ? "UPDATE chat_followups SET status = ?, payload = '{\"text\":\"\"}' WHERE id = ?"
         : "UPDATE chat_followups SET status = ? WHERE id = ?");
+    const stopTask = status === "cancelled" ? connection.prepare(
+      "UPDATE inbox_tasks SET json = json_patch(json, ?) WHERE id = ? AND json_extract(json, '$.status') = 'queued'",
+    ) : null;
+    const stopped = JSON.stringify({ status: "stopped", reason: "Cancelled while queued", updatedAt: Date.now() });
     for (const id of ids) {
       if (status === null) statement.run(id);
-      else statement.run(status, id);
+      else if (statement.run(status, id).changes) stopTask?.run(stopped, id);
     }
   });
+}
+
+type InboxTaskPatch = { status?: InboxTask["status"]; updatedAt?: number } & {
+  [Key in "sourceMessageId" | "executionId" | "resultMessageId" | "seenAt" | "reason" | "progress" | "cardMessageId"]?: InboxTask[Key] | null;
+};
+
+function inboxTaskFromRow(row: { json: string }): InboxTask {
+  return JSON.parse(row.json) as InboxTask;
+}
+
+export function listInboxTasks(): InboxTask[] {
+  return (prepared("SELECT json FROM inbox_tasks ORDER BY rowid DESC").all() as Array<{ json: string }>).map(inboxTaskFromRow);
+}
+
+export function getInboxTask(id: string): InboxTask | null {
+  const row = prepared("SELECT json FROM inbox_tasks WHERE id = ?").get(id) as { json: string } | undefined;
+  return row ? inboxTaskFromRow(row) : null;
+}
+
+export function getInboxTaskBySend(threadId: string, sendId: string): InboxTask | null {
+  const row = prepared("SELECT json FROM inbox_tasks WHERE thread_id = ? AND send_id = ?")
+    .get(threadId, sendId) as { json: string } | undefined;
+  return row ? inboxTaskFromRow(row) : null;
+}
+
+export function updateInboxTask(id: string, patch: InboxTaskPatch): InboxTask | null {
+  const row = prepared("UPDATE inbox_tasks SET json = json_patch(json, ?) WHERE id = ? RETURNING json")
+    .get(JSON.stringify({ ...patch, updatedAt: patch.updatedAt ?? Date.now() }), id) as { json: string } | undefined;
+  return row ? inboxTaskFromRow(row) : null;
 }
 
 export function chatFollowups(kind?: ChatFollowup["kind"]): ChatFollowup[] {
@@ -666,6 +721,7 @@ export function deleteThreads(threadIds: readonly string[], beforeCommit?: () =>
   writeFollowups((connection) => {
     const statements = [
       connection.prepare("DELETE FROM chat_followups WHERE thread_id = ?"),
+      connection.prepare("DELETE FROM inbox_tasks WHERE thread_id = ?"),
       connection.prepare("DELETE FROM messages WHERE thread_id = ?"),
       connection.prepare("DELETE FROM thread_state WHERE thread_id = ?"),
       connection.prepare("DELETE FROM notification_log WHERE thread_id = ?"),

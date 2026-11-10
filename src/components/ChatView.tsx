@@ -849,7 +849,10 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
 
   const { messages: allMessages, activeLeafId } = bot;
   const messages = useMemo(() => visibleMessages({ messages: allMessages, activeLeafId }), [allMessages, activeLeafId]);
-  const lookups = useMemo(() => transcriptLookups(allMessages, messages), [allMessages, messages]);
+  const focus = state.focusMessage?.threadId === bot.threadId ? state.focusMessage : null;
+  const archive = focus?.archivedMessages && !messages.some((message) => message.id === focus.messageId) ? focus.archivedMessages : undefined;
+  const shownMessages = archive ?? messages;
+  const lookups = useMemo(() => transcriptLookups(archive ?? allMessages, shownMessages), [archive, allMessages, shownMessages]);
   const liveTools = useLiveToolIds(messages, bot);
   const recordedRun = useMemo(() => runSteps(messages, liveTools), [messages, liveTools]);
   const recordedRunCounts = runSummary(recordedRun);
@@ -878,9 +881,9 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   } = useTranscriptViewport({
     ownerId: bot.id,
     threadId: bot.threadId,
-    messages,
+    messages: shownMessages,
     pinOn: [bot.busy, composerDock.pad],
-    hasMore: bot.hasMore,
+    hasMore: !archive && bot.hasMore,
   });
 
   const lastBotTextId = useMemo(
@@ -891,7 +894,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
 
   const bots = useDrawnBots(state.bots);
   const teammates = useTeammates(); const mentionPeers = useMemo(() => [...bots.filter((peer) => peer.id !== bot.id), ...teammates.peers], [bots, bot.id, teammates]);
-  const focus = state.focusMessage?.threadId === bot.threadId ? state.focusMessage : null;
   const showToolCalls = showToolCallsEnabled(state.config);
   const tts = state.config?.tts;
   const localVoice = localSystemVoiceActive();
@@ -1181,14 +1183,14 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
               <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
               <span>{t("chat.loadingEarlier")}</span>
             </div>
-          ) : hiddenCount > 0 || bot.hasMore ? (
+          ) : hiddenCount > 0 || (!archive && bot.hasMore) ? (
             <div ref={topSentinelRef} className="h-2 w-full pointer-events-none" aria-hidden="true" />
           ) : null}
           {windowedMessages.length === 0 && !bot.busy && <EmptyChat bot={bot} />}
           <ChatRowsContext.Provider value={rows}><LiveToolsContext value={liveTools}><ChatBusyContext value={busy}><PagePaneContext value={pagePane}>
             <MessagesList
               messages={windowedMessages}
-              transcript={messages}
+              transcript={shownMessages}
               lookups={lookups}
               place={place}
               pinnedMessageId={bot.pinnedMessageId}
@@ -1269,9 +1271,12 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           />
         </div>
       )}
-      {!following && (
+      {(!following || archive) && (
         <div className="relative">
-          <JumpToLatestButton onClick={jumpToLatest} className="pointer-events-auto bottom-2" />
+          <JumpToLatestButton onClick={() => {
+            if (archive) dispatch({ type: "clearInboxTaskFocus" });
+            jumpToLatest();
+          }} className="pointer-events-auto bottom-2" />
         </div>
       )}
       <LiveCallBar bot={bot} />

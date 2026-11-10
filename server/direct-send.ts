@@ -17,6 +17,8 @@ export interface DirectSendInput {
   callId?: string;
   dataContext?: DataContext;
   personPresent: boolean;
+  inboxTask?: boolean;
+  inboxSteer?: string;
   app?: { context?: string; fromApp?: Message["fromApp"]; pointed?: Message["pointed"] };
   /** Sent while the bot works: steer into the running turn, queue after it, or restart it (shared/follow-up.ts). */
   followUp?: FollowUp;
@@ -25,5 +27,5 @@ export interface DirectSendInput {
 }
 
 export type DirectSendReceipt =
-  | { ok: true; threadId: string; message: Message; steered?: true }
-  | { ok: true; queued: true; queueId: string; threadId: string; reason?: SteerQueueReason; why?: string };
+  | { ok: true; threadId: string; message: Message; steered?: true; steerUncertain?: true; taskId?: string }
+  | { ok: true; queued: true; queueId: string; taskId?: string; threadId: string; reason?: SteerQueueReason; why?: string };

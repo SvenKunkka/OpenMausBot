@@ -56,6 +56,7 @@ const EXCLUSION_NOTES = [
   "Waits bots set up: they end within a week, so ask the bot again after restoring.",
 ];
 const RESTORE_WARNING = "Restoring pauses routines, webhooks and calendar calls, ends every wait, and does not resume pending delegations, queued chat messages or queued runs. Definitions and historical receipts are retained; review before enabling them again.";
+const RESTORE_INTERRUPTION = "Not resumed after workspace restore.";
 
 type Entry = { path: string; type: "file" | "directory"; size: number; mode: number; sha256?: string };
 interface Manifest extends WorkspaceBackupPrivateMetadata {
@@ -821,6 +822,12 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
           pause.run(JSON.stringify(payload), row.id);
         }
       }
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'inbox_tasks'").get()) {
+        db.prepare(`UPDATE inbox_tasks SET json = json_patch(json, ?)
+          WHERE json_extract(json, '$.status') IN ('queued', 'running', 'waiting-input', 'waiting-work')`).run(JSON.stringify({
+          status: "interrupted", reason: RESTORE_INTERRUPTION, updatedAt: Date.now(), cardMessageId: null,
+        }));
+      }
       db.exec("COMMIT");
     } finally { db.close(); }
   }
@@ -837,15 +844,15 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
         if (!record(assignment)) continue;
         assignment.status = "failed";
         assignment.outcome = "interrupted";
-        assignment.outcomeDetail = "Not resumed after workspace restore.";
-        assignment.result = "Not resumed after workspace restore.";
+        assignment.outcomeDetail = RESTORE_INTERRUPTION;
+        assignment.result = RESTORE_INTERRUPTION;
         assignment.finishedAt = now;
         assignment.lastActivityAt = now;
         delete assignment.restart;
         delete assignment.question;
         delete assignment.answer;
         update.run(now, JSON.stringify(assignment), row.id);
-        event.run(row.id, now, "failed: interrupted — Not resumed after workspace restore.");
+        event.run(row.id, now, `failed: interrupted — ${RESTORE_INTERRUPTION}`);
       }
       db.exec("COMMIT");
       db.exec("PRAGMA journal_mode = DELETE");

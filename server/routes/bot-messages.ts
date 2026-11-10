@@ -25,7 +25,7 @@ import { messageTextRefusal } from "../message-text.ts";
 import { stopReachesLiveTurn } from "../person-stops.ts";
 import type { PhoneSecretSubmissionRegistry } from "../phone-secret.ts";
 import type { ReplyTarget } from "../replies.ts";
-import type { RequestAuth } from "../request-auth.ts";
+import { ownerOrAdmin, type RequestAuth } from "../request-auth.ts";
 import type { RoutineManager } from "../routines.ts";
 import { acceptedSendMatch, parseSendId } from "../send-idempotency.ts";
 import type { DirectSendInput, DirectSendReceipt } from "../direct-send.ts";
@@ -67,6 +67,7 @@ export interface BotMessageRouteDeps {
   groupSpeakers: ReadonlyMap<string, { botId: string }>;
   desktopManaged: boolean;
   cloudHome: boolean;
+  inboxTasks?: boolean;
   DirectSendRefused: abstract new (...args: never[]) => { readonly status: number; readonly body: Record<string, unknown> };
   acceptDirectSend(input: DirectSendInput, guardedStart?: (currentAtStart: BotRecord) => Promise<DirectSendReceipt>): Promise<DirectSendReceipt>;
   directSendRefusal(botId: string, threadId: string): { status: number; body: Record<string, unknown> } | null;
@@ -204,6 +205,21 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
       if (pageOpen && (guarded || pressed || fromAnApp)) return json(res, 400, { error: "only a typed message can carry the page the person has open" });
       const followUp = parseFollowUp(body.followUp);
       if (followUp === null) return json(res, 400, { error: "followUp must be steer, queue or restart" });
+      const inboxTask = body.inboxTask === true;
+      const inboxSteer = body.inboxSteer;
+      if (inboxSteer !== undefined && (typeof inboxSteer !== "string" || !/^[\w-]+$/.test(inboxSteer) ||
+          inboxTask || followUp !== "steer" || body.mode === "goal" || guarded || pressed || fromAnApp)) {
+        return json(res, 400, { error: "inboxSteer requires the running task ID and an explicit typed supplement" });
+      }
+      if (body.inboxTask !== undefined && typeof body.inboxTask !== "boolean") {
+        return json(res, 400, { error: "inboxTask must be a boolean" });
+      }
+      if (inboxTask && (guarded || pressed || fromAnApp || followUp || body.mode === "goal")) {
+        return json(res, 400, { error: "only a new typed message can start an inbox task" });
+      }
+      if ((inboxTask || inboxSteer) && (!deps.inboxTasks || !ownerOrAdmin(auth))) {
+        return json(res, 403, { error: "task inbox is available to the local workspace owner" });
+      }
       const mentions = parseMentionPicks(body.mentions);
       if (mentions === null) return json(res, 400, { error: "mentions must be a list of up to 20 bot ids" });
       if (followUp && (guarded || pressed || fromAnApp)) return json(res, 400, { error: "only a typed message can choose how it meets the running turn" });
@@ -260,7 +276,9 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
       if (pressed && !store.taskByThread(bot.id, threadId)) return json(res, 409, { error: "the bot switched tasks before it could receive the message" });
       const phone = fromPhone(auth);
       // A phone's send without an id gets one, so the turn it starts can be known as the phone's.
-      const sendId = parseSendId(body.sendId) ?? (phone ? randomUUID() : undefined);
+      const clientSendId = parseSendId(body.sendId);
+      if (inboxTask && !clientSendId) return json(res, 400, { error: "inbox tasks require a client sendId" });
+      const sendId = clientSendId ?? (phone ? randomUUID() : undefined);
       const press = pressed ? prepareWidgetPress(store, threadId, body.widgetAction, sendId) : null;
       if (press && !press.ok) return json(res, press.status, { error: press.error });
       const answered = press ? serverPress(bot, threadId, press.messageId, press.action, auth) : null;
@@ -279,7 +297,7 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
       const target = resolveReplyTarget(threadId, press ? press.messageId : appSent ? appSent.messageId : body.replyToId);
       if (relayed && target?.role !== "bot") return json(res, 400, { error: "a relayed reaction answers a bot's message" });
       const passedBack = !guarded && !press && !appSent && !pointed && target ? deps.inboxReply?.(auth, threadId, target.id, text, { sendId, sender: messageSender(auth) }) : null;
-      const typedAnswer = passedBack || guarded || press || appSent || pointed ? null : await deps.typedCardAnswer?.(auth, threadId, text, target, { sendId, sender: messageSender(auth) });
+      const typedAnswer = passedBack || guarded || press || appSent || pointed || (inboxTask && !target) || inboxSteer ? null : await deps.typedCardAnswer?.(auth, threadId, text, target, { sendId, sender: messageSender(auth) });
       const answeredBack = passedBack ?? typedAnswer;
       if (answeredBack) return json(res, answeredBack.status, answeredBack.message ? { ok: true, threadId, message: answeredBack.message } : { error: answeredBack.error });
       // Only a real press or reaction, or an app's own words, marks the reply; a typed reply to the same row never does, whatever its words.
@@ -342,7 +360,7 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
       try {
         const receipt = await acceptDirectSend({
           botId: bot.id, threadId, text, sendId, replyTo, sender, trigger, dataContext, ...(app ? { app } : {}),
-          personPresent, ...(followUp ? { followUp } : {}),
+          personPresent, inboxTask, inboxSteer, ...(followUp ? { followUp } : {}),
           ...(mentions?.length && !press && !appSent ? { mentions } : {}),
         }, guardedStart);
         press?.settle("queueId" in receipt ? receipt.queueId : undefined);

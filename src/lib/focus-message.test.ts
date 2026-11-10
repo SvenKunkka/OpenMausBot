@@ -1,11 +1,12 @@
 import type { EffectCallback } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const fixture = vi.hoisted(() => ({ effect: null as EffectCallback | null, text: "", dispatch: vi.fn() }));
+const fixture = vi.hoisted(() => ({ effect: null as EffectCallback | null, text: "", inboxTaskId: undefined as string | undefined, dispatch: vi.fn(), mark: vi.fn() }));
 vi.mock("react", () => ({ useEffect: (effect: EffectCallback) => { fixture.effect = effect; } }));
+vi.mock("@/state/inbox-tasks", () => ({ markInboxTaskRead: fixture.mark }));
 vi.mock("@/state/store", () => ({
   api: vi.fn(),
-  useStore: () => ({ state: { focusMessage: { threadId: "thread", messageId: "message", matchText: fixture.text, nonce: 1, consumed: false } }, dispatch: fixture.dispatch }),
+  useStore: () => ({ state: { focusMessage: { threadId: "thread", messageId: "message", matchText: fixture.text, inboxTaskId: fixture.inboxTaskId, nonce: 1, consumed: false } }, dispatch: fixture.dispatch }),
 }));
 
 import { useFocusMessage } from "./focus-message";
@@ -17,6 +18,8 @@ let target: { scrollIntoView: ReturnType<typeof vi.fn>; classList: { add: Return
 beforeEach(() => {
   vi.useFakeTimers();
   fixture.dispatch.mockClear();
+  fixture.mark.mockReset().mockResolvedValue(true);
+  fixture.inboxTaskId = undefined;
   ranges = [];
   highlights = new Map();
   const node = { data: "alpha\nbeta a.b", length: 14 };
@@ -42,9 +45,9 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup?.(); cleanup = undefined; vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-function focus(text: string) {
+function focus(text: string, viewport?: HTMLElement) {
   fixture.text = text;
-  useFocusMessage("thread", true);
+  useFocusMessage("thread", true, viewport ? { current: viewport } : undefined);
   cleanup = fixture.effect!() as () => void;
 }
 
@@ -63,5 +66,39 @@ describe("search match highlighting", () => {
     expect(ranges).toMatchObject([{ start, end }]);
     expect(highlights.has("search-result-text")).toBe(true);
     expect(requestAnimationFrame).toHaveBeenCalledOnce();
+  });
+});
+
+describe("unread task visibility", () => {
+  it("marks only the requested result once its viewport is in front and the reply is unobscured", async () => {
+    fixture.inboxTaskId = "requested-task";
+    const box = { left: 10, right: 100, top: 10, bottom: 100 };
+    let foreground = false;
+    let obscured = true;
+    Object.assign(target, {
+      isConnected: true,
+      getBoundingClientRect: () => box,
+      contains: (node: unknown) => node === target,
+    });
+    Object.assign(window, { innerWidth: 100, innerHeight: 100 });
+    Object.assign(document, {
+      hasFocus: () => foreground,
+      visibilityState: "visible",
+      elementFromPoint: () => obscured ? null : target,
+    });
+    const viewport = {
+      getBoundingClientRect: () => box,
+      querySelector: () => ({ lastElementChild: target, querySelector: () => target }),
+    } as unknown as HTMLElement;
+    focus("", viewport);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(fixture.mark).not.toHaveBeenCalled();
+    foreground = true;
+    await vi.advanceTimersByTimeAsync(150);
+    expect(fixture.mark).not.toHaveBeenCalled();
+    obscured = false;
+    await vi.advanceTimersByTimeAsync(150);
+    expect(fixture.mark).toHaveBeenCalledExactlyOnceWith("requested-task");
+    expect(fixture.dispatch).toHaveBeenCalledWith({ type: "focusMessageConsumed", nonce: 1 });
   });
 });

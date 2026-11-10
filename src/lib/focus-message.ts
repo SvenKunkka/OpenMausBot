@@ -1,7 +1,8 @@
 // Rows are `display: contents` wrappers with no box, so their last child is what gets scrolled and highlighted.
-import { useEffect } from "react";
+import { useEffect, type RefObject } from "react";
 import { api, MESSAGE_PAGE_SIZE, useStore, type Action, type AppState, type Message } from "@/state/store";
 import type { SearchHit } from "@/lib/search-hit";
+import { markInboxTaskRead } from "@/state/inbox-tasks";
 import { t } from "@/lib/i18n";
 
 const FLASH_CLASSES = ["ring-2", "ring-accent/70", "rounded-2xl", "transition-shadow"];
@@ -99,29 +100,66 @@ function matchRange(root: HTMLElement, text: string): Range | null {
   return null;
 }
 
-export function useFocusMessage(threadId: string, ready: boolean) {
+export function messageIsVisible(target: HTMLElement, viewport: HTMLElement): boolean {
+  if (!document.hasFocus() || document.visibilityState !== "visible" || !target.isConnected) return false;
+  const row = target.getBoundingClientRect();
+  const bounds = viewport.getBoundingClientRect();
+  const left = Math.max(0, row.left, bounds.left);
+  const right = Math.min(window.innerWidth, row.right, bounds.right);
+  const top = Math.max(0, row.top, bounds.top);
+  const bottom = Math.min(window.innerHeight, row.bottom, bounds.bottom);
+  if (right <= left || bottom <= top) return false;
+  const x = (left + right) / 2;
+  return [0.25, 0.5, 0.75].some((part) => target.contains(document.elementFromPoint(x, top + (bottom - top) * part)));
+}
+
+export function useFocusMessage(threadId: string, ready: boolean, viewport?: RefObject<HTMLElement | null>) {
   const { state, dispatch } = useStore();
   const focus = state.focusMessage;
   useEffect(() => {
     if (!focus || focus.consumed || focus.threadId !== threadId || !ready) return;
     let tries = 0;
+    let visibleTries = 0;
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let flashTimer: ReturnType<typeof setTimeout> | null = null;
     let scrollFrame: number | null = null;
     let target: HTMLElement | null = null;
     let highlight: Highlight | null = null;
+    const consume = () => dispatch({ type: "focusMessageConsumed", nonce: focus.nonce });
+    const failed = () => {
+      if (!focus.archivedMessages) return;
+      consume();
+      dispatch({ type: "error", message: t("inbox.tasks.openFailed") });
+    };
+    const waitForVisible = () => {
+      if (cancelled || !target || !focus.inboxTaskId) return;
+      const root = viewport?.current;
+      if (root && messageIsVisible(target, root)) {
+        consume();
+        void markInboxTaskRead(focus.inboxTaskId).then((ok) => {
+          if (!ok && !cancelled) dispatch({ type: "error", message: t("inbox.tasks.markFailed") });
+        });
+        return;
+      }
+      if (document.hasFocus() && document.visibilityState === "visible" && visibleTries++ >= 20) failed();
+      else retryTimer = setTimeout(waitForVisible, 150);
+    };
     const attempt = () => {
       if (cancelled) return;
-      const wrapper = document.querySelector<HTMLElement>(`[data-mid="${CSS.escape(focus.messageId)}"]`);
+      const root = viewport?.current ?? document;
+      const wrapper = root.querySelector<HTMLElement>(`[data-mid="${CSS.escape(focus.messageId)}"]`);
       const row = wrapper?.lastElementChild as HTMLElement | null;
-      target = focus.matchText ? row?.querySelector<HTMLElement>("[data-chat-bubble]") ?? row : row;
+      target = focus.inboxTaskId
+        ? wrapper?.querySelector<HTMLElement>("[data-chat-bubble]") ?? row
+        : focus.matchText ? row?.querySelector<HTMLElement>("[data-chat-bubble]") ?? row : row;
       if (!target) {
         if (tries++ < 20) retryTimer = setTimeout(attempt, 100);
+        else failed();
         return;
       }
       const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-      target.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+      target.scrollIntoView({ block: "center", behavior: reducedMotion || focus.archivedMessages ? "auto" : "smooth" });
       target.classList.add(...FLASH_CLASSES);
       // A reply split into bubbles and table cards has several text roots; a quoted reply's text is not the message's.
       const found = target.querySelectorAll<HTMLElement>(".chat-md, .chat-text");
@@ -144,7 +182,8 @@ export function useFocusMessage(threadId: string, ready: boolean) {
         });
       }
       // `consumed` is deliberately not a dependency, so this flash survives the bookkeeping update.
-      dispatch({ type: "focusMessageConsumed", nonce: focus.nonce });
+      if (focus.inboxTaskId) retryTimer = setTimeout(waitForVisible, 0);
+      else consume();
       flashTimer = setTimeout(() => target?.classList.remove(...FLASH_CLASSES), 1800);
     };
     attempt();
@@ -156,5 +195,5 @@ export function useFocusMessage(threadId: string, ready: boolean) {
       target?.classList.remove(...FLASH_CLASSES);
       if (highlight && CSS.highlights.get("search-result-text") === highlight) CSS.highlights.delete("search-result-text");
     };
-  }, [dispatch, focus?.nonce, focus?.threadId, focus?.messageId, threadId, ready]);
+  }, [dispatch, focus?.nonce, focus?.threadId, focus?.messageId, threadId, ready, viewport]);
 }

@@ -49,6 +49,7 @@ function teamData(root: string): void {
   const db = new DatabaseSync(join(root, "messages.db"));
   db.exec("CREATE TABLE messages(thread_id TEXT, id TEXT, at INTEGER, role TEXT, kind TEXT, text TEXT, json TEXT, PRIMARY KEY(thread_id,id)); CREATE TABLE thread_state(thread_id TEXT PRIMARY KEY, active_leaf_id TEXT);"
     + " CREATE TABLE chat_followups(id TEXT PRIMARY KEY, kind TEXT, owner_id TEXT, thread_id TEXT, send_id TEXT, status TEXT, payload TEXT);"
+    + " CREATE TABLE inbox_tasks(id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, send_id TEXT NOT NULL, json TEXT NOT NULL, UNIQUE (thread_id, send_id));"
     + " CREATE TABLE notification_log(id TEXT PRIMARY KEY, at INTEGER, kind TEXT, bot_id TEXT, bot_name TEXT, thread_id TEXT, group_id TEXT, title TEXT, body TEXT, avatar_url TEXT, for_person TEXT, read INTEGER);");
   ensureMemoryIndex(db);
   db.exec("CREATE TABLE command_receipts(kind TEXT, key TEXT, at INTEGER, result TEXT, PRIMARY KEY (kind, key))");
@@ -62,6 +63,11 @@ function teamData(root: string): void {
     db.prepare("INSERT INTO thread_state VALUES (?, ?)").run(thread, `${thread}-m1`);
     db.prepare("INSERT INTO chat_followups VALUES (?, 'bot', 'bot', ?, 's', 'pending', ?)").run(`${thread}-f`, thread, JSON.stringify({ text }));
     db.prepare("INSERT INTO notification_log VALUES (?, 1, 'mention', 'bot', 'Scout', ?, NULL, ?, ?, NULL, ?, 0)").run(`${thread}-n`, thread, text, text, BOB);
+  }
+  const task = db.prepare("INSERT INTO inbox_tasks VALUES (?, ?, ?, ?)");
+  for (const [threadId, botId, title] of [["main", "bot", "shared task title"], ["bob-chat", "bot", "secret private task title"], ["bobs-own-main", "bobs-own", "secret task without a transcript"]]) {
+    const id = `${threadId}-task`;
+    task.run(id, threadId, "s", JSON.stringify({ id, threadId, botId, sendId: "s", title, status: "replied", createdAt: 1, updatedAt: 2 }));
   }
   db.close();
   const runtime = openRuntimeStore(join(root, "runtime.db"));
@@ -112,7 +118,7 @@ describe("what a Team Cloud's export leaves out (the private sentence: not the O
     const root = directory();
     teamData(root);
     const messages = join(root, "messages.db"), runtime = join(root, "runtime.db");
-    stripTeamPrivate({ messages, runtime }, { threads: new Set(["bob-chat", "bobs-inbox"]), bots: new Set(["bobs-own"]), attachments: new Set() });
+    stripTeamPrivate({ messages, runtime }, { threads: new Set(["bob-chat", "bobs-inbox", "bobs-own-main"]), bots: new Set(["bobs-own"]), attachments: new Set() });
     for (const sql of ["SELECT thread_id AS id FROM messages", "SELECT thread_id AS id FROM thread_state", "SELECT thread_id AS id FROM chat_followups", "SELECT thread_id AS id FROM notification_log"]) {
       expect(table(messages, sql).map((row) => row.id).sort()).toEqual(["main", "outside-thread", "room-thread"]);
     }
@@ -145,15 +151,17 @@ describe("what a Team Cloud's export leaves out (the private sentence: not the O
     expect(existsSync(join(team.data, "attachments", "avatar.png"))).toBe(true);
     expect(existsSync(join(team.data, "workspaces", "bobs-own"))).toBe(false);
     expect(table(join(team.data, "messages.db"), "SELECT thread_id AS id FROM messages").map((row) => row.id).sort()).toEqual(["main", "outside-thread", "room-thread"]);
+    expect(table(join(team.data, "messages.db"), "SELECT thread_id FROM inbox_tasks")).toEqual([{ thread_id: "main" }]);
     expect(table(join(team.data, "runtime.db"), "SELECT id FROM assignments").map((row) => row.id)).toEqual(["as-team"]);
     expect(textOf(join(team.data, "messages.db")).toLowerCase()).not.toContain("secret");
 
     process.env.OMB_CLOUD_ROLE = "home";
-    const own = directory();
-    teamData(own);
-    const home = await exported(own);
+    const home = await exported(root);
     expect(home.warnings).not.toContain(TEAM_PRIVATE_NOTE);
     expect(existsSync(join(home.data, "workspaces", `bot--member-${BOB}`, "MEMORY.md"))).toBe(true);
     expect(table(join(home.data, "messages.db"), "SELECT thread_id AS id FROM messages").map((row) => row.id).sort()).toEqual(["bob-chat", "bobs-inbox", "main", "outside-thread", "room-thread"]);
+    expect(table(join(home.data, "messages.db"), "SELECT thread_id FROM inbox_tasks ORDER BY thread_id")).toEqual([
+      { thread_id: "bob-chat" }, { thread_id: "bobs-own-main" }, { thread_id: "main" },
+    ]);
   }, 60_000);
 });

@@ -148,7 +148,7 @@ export function teamPrivateAttachments(root: string, messages: string, privacy: 
 export function stripTeamPrivate(snapshot: { messages: string; runtime: string }, privacy: TeamPrivacy): void {
   const threads = [...privacy.threads];
   strip(snapshot.messages, (db) => {
-    for (const table of ["messages", "thread_state", "chat_followups", "notification_log"]) deleteWhereIn(db, table, "thread_id", threads);
+    for (const table of ["messages", "thread_state", "chat_followups", "inbox_tasks", "notification_log"]) deleteWhereIn(db, table, "thread_id", threads);
     // A tool's saved answer, kept only so a retried call repeats it: nothing says whose chat it came from.
     if (hasTable(db, "command_receipts")) db.exec("DELETE FROM command_receipts");
     if (!hasTable(db, "memory_files")) return;

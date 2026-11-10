@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createServer as createNetServer } from "node:net";
 import { gzipSync } from "node:zlib";
 import { Header } from "tar";
+import type { InboxTask, InboxTaskStatus } from "../shared/inbox-task.ts";
 import { browserProfilesRoot } from "./browser-engine.ts";
 import { openRuntimeStore } from "./runtime/store.ts";
 import type { Assignment } from "./runtime/types.ts";
@@ -277,7 +278,50 @@ describe("encrypted full workspace backups", () => {
       expect(db.prepare("SELECT id, status FROM chat_followups ORDER BY rowid").all()).toEqual([
         { id: "pending", status: "interrupted" }, { id: "dispatching", status: "interrupted" }, { id: "cancelled", status: "cancelled" },
       ]);
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'inbox_tasks'").get()).toBeUndefined();
     } finally { db.close(); }
+  });
+
+  it("interrupts unfinished inbox tasks when restoring a workspace and retains task results and their read state", async () => {
+    const source = directory();
+    const db = fixture(source);
+    const active: InboxTaskStatus[] = ["queued", "running", "waiting-input", "waiting-work"];
+    const terminal: InboxTaskStatus[] = ["replied", "failed", "stopped", "interrupted"];
+    const queueIds: Partial<Record<InboxTaskStatus, string>> = { queued: "pending", running: "dispatching" };
+    const tasks = [...active, ...terminal].map((status): InboxTask => {
+      const id = queueIds[status] ?? status;
+      return {
+        id, botId: "bot", threadId: "thread", sendId: `send-${id}`, title: `Task ${status}`, status, createdAt: 10, updatedAt: 20,
+        ...(status === "waiting-input" ? { cardMessageId: "card" } : {}),
+        ...(status === "replied" ? { resultMessageId: "reply", seenAt: 30 } : {}),
+        ...(status === "running" ? { sourceMessageId: "message", resultMessageId: "partial", executionId: "execution" } : {}),
+      };
+    });
+    try {
+      db.exec("CREATE TABLE inbox_tasks(id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, send_id TEXT NOT NULL, json TEXT NOT NULL, UNIQUE (thread_id, send_id))");
+      const insert = db.prepare("INSERT INTO inbox_tasks VALUES (?, ?, ?, ?)");
+      for (const task of tasks) insert.run(task.id, task.threadId, task.sendId, JSON.stringify(task));
+    } finally { db.close(); }
+    const exported = await createWorkspaceBackup(source, { password: PASSWORD });
+    const target = directory();
+    const staged = await stageWorkspaceBackup(target, exported.path, { password: PASSWORD });
+    commitPendingWorkspaceRestore(target, staged.id);
+    expect(applyPendingWorkspaceRestore(target)).toMatchObject({ restored: true, id: staged.id });
+    const restored = new DatabaseSync(join(target, "messages.db"), { readOnly: true });
+    try {
+      expect(restored.prepare("SELECT id, status FROM chat_followups ORDER BY rowid").all()).toEqual([
+        { id: "pending", status: "interrupted" }, { id: "dispatching", status: "interrupted" }, { id: "cancelled", status: "cancelled" },
+      ]);
+      const rows: InboxTask[] = restored.prepare("SELECT json FROM inbox_tasks ORDER BY rowid").all().map((row) => JSON.parse(String(row.json)));
+      expect(rows.map((row) => row.status)).toEqual(["interrupted", "interrupted", "interrupted", "interrupted", ...terminal]);
+      for (const task of rows.slice(0, active.length)) {
+        expect(task.reason).toBe("Not resumed after workspace restore.");
+        expect(task.updatedAt).toBeGreaterThan(20);
+        expect(task).not.toHaveProperty("cardMessageId");
+      }
+      expect(rows[1]).toMatchObject({ sourceMessageId: "message", resultMessageId: "partial", executionId: "execution" });
+      expect(rows.slice(active.length)).toEqual(tasks.slice(active.length));
+    } finally { restored.close(); }
   });
 
   // A Windows PC moves to a Linux Cloud; restored on Windows, its paths are this computer's own and are kept.

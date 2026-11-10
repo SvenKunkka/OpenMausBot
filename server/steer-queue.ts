@@ -33,10 +33,12 @@ interface QueueEntry {
     origin?: WorkOrigin;
     sender?: ResolvedSender;
     trigger?: UsageTrigger;
+    inboxTask?: boolean;
     queuedAt: number;
     via?: "call";
     callId?: string;
     fromApp?: Message["fromApp"];
+    pointed?: Message["pointed"];
     reaction?: string;
     relay?: Message["relay"];
     /** The person's row already in the transcript, steered into a turn that was stopped before it read it: it runs as
@@ -47,7 +49,7 @@ interface QueueEntry {
   }>;
 }
 
-export type SteerQueueHead = Pick<QueueEntry["items"][number], "trigger" | "sender" | "peerAsk" | "origin" | "mentions">;
+export type SteerQueueHead = Pick<QueueEntry["items"][number], "trigger" | "sender" | "peerAsk" | "origin" | "mentions" | "inboxTask">;
 
 const queues = new Map<string, QueueEntry>();
 
@@ -90,7 +92,8 @@ export function queuedSteerSnapshot(ownsThread: (botId: string, threadId: string
   return Object.fromEntries([...queues]
     .filter(([threadId, entry]) => ownsThread(entry.botId, threadId))
     .map(([threadId, entry]) => [threadId, entry.items.filter((item) => !item.rowId).map((item) => ({
-      queueId: item.messageId, text: item.text, ...(item.reason ? { reason: item.reason, why: whyHeld(threadId, item.reason) } : {}),
+      queueId: item.messageId, text: item.text, ...(item.inboxTask ? { inboxTask: true } : {}),
+      ...(item.reason ? { reason: item.reason, why: whyHeld(threadId, item.reason) } : {}),
     }))]));
 }
 
@@ -107,7 +110,7 @@ export function queueSteeredMessage(
   botId: string,
   threadId: string,
   text: string,
-  options: { prompt?: string; replyToId?: string; sendId?: string; dataContext?: Message["dataContext"]; reason?: SteerQueueReason; unattended?: boolean; peerAsk?: Message["peerAsk"]; origin?: WorkOrigin; sender?: ResolvedSender; trigger?: UsageTrigger; callId?: string; via?: "call"; reaction?: string; fromApp?: Message["fromApp"]; relay?: Message["relay"]; rowId?: string; first?: boolean; queuedAt?: number; mentions?: string[] } = {},
+  options: { prompt?: string; replyToId?: string; sendId?: string; dataContext?: Message["dataContext"]; reason?: SteerQueueReason; unattended?: boolean; peerAsk?: Message["peerAsk"]; origin?: WorkOrigin; sender?: ResolvedSender; trigger?: UsageTrigger; callId?: string; via?: "call"; reaction?: string; fromApp?: Message["fromApp"]; pointed?: Message["pointed"]; relay?: Message["relay"]; rowId?: string; first?: boolean; queuedAt?: number; mentions?: string[]; inboxTask?: boolean } = {},
 ): QueuedSteer {
   const id = newId();
   const entry = queues.get(threadId) ?? { botId, items: [] };
@@ -125,9 +128,11 @@ export function queueSteeredMessage(
     ...(options.origin ? { origin: options.origin } : {}),
     sender: options.sender,
     trigger: options.trigger,
+    ...(options.inboxTask ? { inboxTask: true } : {}),
     queuedAt: options.queuedAt ?? Date.now(),
     ...spokenLineFields(options.via, options.callId),
     ...(options.fromApp ? { fromApp: options.fromApp } : {}),
+    ...(options.pointed ? { pointed: options.pointed } : {}),
     ...(options.reaction ? { reaction: options.reaction } : {}),
     ...(options.relay ? { relay: options.relay } : {}),
     ...(options.rowId ? { rowId: options.rowId } : {}),
@@ -220,6 +225,7 @@ export function drainSteeredMessages(
           sender: item.sender,
           ...spokenLineFields(item.via, item.callId),
           ...(item.fromApp ? { fromApp: item.fromApp } : {}),
+          ...(item.pointed ? { pointed: item.pointed } : {}),
           ...(item.relay ? { relay: item.relay } : {}),
           ...(item.reaction ? { reaction: item.reaction } : {}),
         }),
@@ -238,7 +244,8 @@ export function drainSteeredMessages(
       appended.map((message) => message.id),
       // One unattended line makes the turn unattended: a person's words in the group cannot re-attend a bot's own.
       group.some((item) => item.unattended === true),
-      { trigger: group[0].trigger, sender: group[0].sender, peerAsk: group[0].peerAsk, origin: group[0].origin, ...(mentions.length ? { mentions } : {}) },
+      { trigger: group[0].trigger, sender: group[0].sender, peerAsk: group[0].peerAsk, origin: group[0].origin,
+        ...(group[0].inboxTask ? { inboxTask: true } : {}), ...(mentions.length ? { mentions } : {}) },
     );
     void Promise.resolve(running).then(
       () => settleChatFollowups(ids, null),
@@ -249,6 +256,7 @@ export function drainSteeredMessages(
 
 /** Who sent it, provenance included: a bot's own work never merges with a person's texts, nor a spoken line with a typed one. */
 function coalesceIdentity(item: QueueEntry["items"][number]): string {
+  if (item.inboxTask) return `task:${item.messageId}`;
   if (item.peerAsk?.incident) return "incident";
   if (item.peerAsk) return `peer:${item.peerAsk.botId}:${item.unattended === true ? "unattended" : "attended"}:${JSON.stringify(item.origin ?? null)}`;
   if (item.unattended === true) return "unattended";
@@ -281,10 +289,10 @@ export function cancelSteeredMessage(botId: string, messageId: string, expectedT
   return false;
 }
 
-/** The entry leaves first, so a racing settle cannot also dispatch these words; the caller must restore or settle it. */
+/** Held messages cannot dispatch until the caller restores them. */
 export function holdSteeredQueue(botId: string, threadId: string, queueId: string): HeldSteerQueue | null {
   const entry = queues.get(threadId);
-  if (!entry || entry.botId !== botId || !entry.items.some((item) => item.messageId === queueId)) return null;
+  if (!entry || entry.botId !== botId || entry.items.some((item) => item.inboxTask) || !entry.items.some((item) => item.messageId === queueId)) return null;
   queues.delete(threadId);
   changed();
   return { botId, threadId, items: entry.items };

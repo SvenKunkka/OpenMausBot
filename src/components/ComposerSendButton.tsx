@@ -11,6 +11,7 @@ const FOLLOW_UP_ICON = { steer: CornerDownRight, queue: Clock, restart: RotateCc
 export interface FollowUpMenu {
   /** What Enter does first, then the other one where the turn can be steered, then restart. */
   choices: FollowUp[];
+  tracked?: boolean;
   name: string;
   sendKey: string;
   alternateKey: string;
@@ -30,7 +31,7 @@ export function ComposerSendButton({ compact, waits, label, title, look, disable
   menu?: FollowUpMenu;
   onChoose: (followUp: FollowUp) => void;
 }) {
-  const alternate = menu?.choices[1] !== "restart" ? menu?.choices[1] : undefined;
+  const alternate = !menu?.tracked && menu?.choices[1] !== "restart" ? menu?.choices[1] : undefined;
   const button = (
     <button
       data-workspace-send
@@ -54,8 +55,8 @@ export function ComposerSendButton({ compact, waits, label, title, look, disable
     const Icon = FOLLOW_UP_ICON[choice];
     return {
       key: choice,
-      label: t(`composer.followUp.${choice}`),
-      subtitle: t(`composer.followUp.${choice}Hint`, { name: menu.name }),
+      label: menu.tracked && choice !== "restart" ? t(`inbox.tasks.send.${choice}`) : t(`composer.followUp.${choice}`),
+      subtitle: menu.tracked && choice !== "restart" ? t(`inbox.tasks.send.${choice}Hint`) : t(`composer.followUp.${choice}Hint`, { name: menu.name }),
       icon: <Icon size={16} aria-hidden="true" />,
       active: index === 0,
       value: index === 0 ? menu.sendKey : choice === alternate ? menu.alternateKey : undefined,

@@ -162,6 +162,8 @@ export class RuntimeCoordinator implements Coordinator {
       clock: { now: () => this.now(), monotonic: () => performance.now() },
       limits: { depth: 4, requests: REQUESTS_PER_ROOT, executions: EXECUTIONS_PER_ROOT, turnStallMs: TURN_STALL_MS, ...options.runtimeLimits },
       ...(options.log ? { log: options.log } : {}),
+      interruptOnRestart: (node) => !node.assignee.destination.groupId &&
+        options.interruptOnRestart?.(node.assignee.destination.threadId, node.assignee.botId) === true,
     });
   }
 

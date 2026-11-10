@@ -4,6 +4,7 @@ import { Inbox } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { closeInbox, openInbox, useInboxPanel, useInboxSupport, useInboxView } from "@/state/inbox";
+import { inboxTaskUnread, useInboxTasks } from "@/state/inbox-tasks";
 import { useTeamPeople } from "@/state/team-people";
 import { inboxFixes, waitingCount } from "./inbox/inbox-view";
 
@@ -18,10 +19,14 @@ export function SidebarInboxRow({ icons, large, running, onOpened }: {
   const view = useInboxView();
   const team = useTeamPeople();
   const { open } = useInboxPanel();
-  if (support === "no") return null;
+  const tasks = useInboxTasks();
+  if (support === "no" && !tasks.enabled) return null;
   const count = waitingCount(view) + inboxFixes(team?.needsYou, view).length;
   const shown = count > 9 ? "9+" : String(count);
-  const label = count > 0 ? t("inbox.row.count", { count }) : t("inbox.panel.title");
+  const unread = tasks.tasks.filter(inboxTaskUnread).length;
+  const unreadShown = unread > 9 ? "9+" : String(unread);
+  const baseLabel = count > 0 ? t("inbox.row.count", { count }) : t("inbox.panel.title");
+  const label = unread > 0 ? `${baseLabel}, ${t("inbox.tasks.badge", { count: unread })}` : baseLabel;
   const toggle = () => {
     if (open) closeInbox();
     else { openInbox(); onOpened?.(); }
@@ -33,6 +38,7 @@ export function SidebarInboxRow({ icons, large, running, onOpened }: {
         className={cn("relative mx-auto mb-1 flex size-[46px] shrink-0 items-center justify-center rounded-xl text-ink-secondary hover:bg-raised hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus", open && "bg-raised text-ink")}>
         <Inbox size={20} strokeWidth={1.5} aria-hidden="true" />
         {count > 0 && <span aria-hidden="true" data-inbox-count className="absolute -right-0.5 -top-0.5 flex min-w-4 items-center justify-center rounded-full bg-warning px-0.5 text-[10px] font-semibold leading-4 text-panel">{shown}</span>}
+        {unread > 0 && <span aria-hidden="true" data-inbox-task-count className="absolute -left-0.5 -top-0.5 min-w-4 rounded-full bg-accent px-0.5 text-center text-[10px] font-semibold leading-4 text-accent-ink">{unreadShown}</span>}
         {dot}
       </button>
     );
@@ -46,6 +52,7 @@ export function SidebarInboxRow({ icons, large, running, onOpened }: {
           {dot}
         </span>
         <span className={cn("min-w-0 flex-1 truncate text-ink", large ? "text-[14px] font-medium leading-5" : "text-[15px] font-semibold leading-5")}>{t("inbox.panel.title")}</span>
+        {unread > 0 && <span aria-hidden="true" data-inbox-task-count className="shrink-0 rounded-full bg-accent px-1.5 text-[11px] font-semibold tabular-nums text-accent-ink">{unreadShown}</span>}
         {count > 0 && <span aria-hidden="true" data-inbox-count className="shrink-0 rounded-full bg-warning px-1.5 text-[11px] font-semibold tabular-nums text-panel">{shown}</span>}
       </button>
     </div>

@@ -5,8 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DATA_DIR } from "./config.ts";
 import { closeMessageDb,
+  chatFollowups,
   deleteThread,
   deleteThreads,
+  getInboxTask,
+  getInboxTaskBySend,
   indexMemoryFile,
   indexedMemoryFiles,
   insertMessage,
@@ -15,6 +18,7 @@ import { closeMessageDb,
   liveAppRows,
   latestPersonLineAts,
   logNotification,
+  listInboxTasks,
   openRescueMessages,
   latestSaidByBot,
   markNotificationLogRead,
@@ -27,7 +31,10 @@ import { closeMessageDb,
   readThreadTail,
   recallMessages,
   searchMessages,
+  saveChatFollowup,
   setActiveLeaf,
+  settleChatFollowups,
+  updateInboxTask,
   updateMessage, describeMissingFts5 } from "./message-db.ts";
 import type { NotificationLogEntry } from "../shared/notification.ts";
 import { withPeerProvenance } from "./peer-provenance.ts";
@@ -50,6 +57,34 @@ describe("message-db", () => {
     closeMessageDb();
     rmSync(DATA_DIR, { recursive: true, force: true });
     mkdirSync(DATA_DIR, { recursive: true });
+  });
+
+  it("rolls back the follow-up insert if creating its inbox task fails", () => {
+    const task = { id: "first", kind: "bot", ownerId: "bot", threadId: "thread",
+      payload: { text: "Initial request", inboxTask: true, sendId: "send", queuedAt: 123 } } as const;
+    saveChatFollowup(task);
+    expect(() => saveChatFollowup({ ...task, id: "second" })).toThrow();
+    closeMessageDb();
+    expect(chatFollowups().map((row) => row.id)).toEqual(["first"]);
+    expect(listInboxTasks()).toEqual([{
+      id: "first", botId: "bot", threadId: "thread", sendId: "send", title: "Initial request",
+      status: "queued", createdAt: 123, updatedAt: 123,
+    }]);
+  });
+
+  it("retains a cancelled task by send ID until deleting the conversation", () => {
+    saveChatFollowup({ id: "task", kind: "bot", ownerId: "bot", threadId: "thread",
+      payload: { text: "Example task", inboxTask: true, sendId: "send" } });
+    updateInboxTask("task", { reason: "waiting", progress: { text: "Checked the file", at: 123 } });
+    updateInboxTask("task", { reason: null });
+    expect(getInboxTask("task")).not.toHaveProperty("reason");
+    settleChatFollowups(["task"], "cancelled");
+    closeMessageDb();
+    expect(getInboxTaskBySend("thread", "send")).toMatchObject({ id: "task", status: "stopped", progress: { text: "Checked the file", at: 123 } });
+    expect(getInboxTaskBySend("other", "send")).toBeNull();
+    deleteThread("thread");
+    expect(getInboxTask("task")).toBeNull();
+    expect(chatFollowups()).toEqual([]);
   });
 
   it("persists inserts, updates, and the active leaf across a reopen", () => {

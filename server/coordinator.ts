@@ -235,6 +235,7 @@ export interface CoordinatorOptions {
   handoffLimit?: HandoffLimit;
   now?: () => number;
   runtimeLimits?: Partial<Limits>;
+  interruptOnRestart?: (threadId: string, botId: string) => boolean;
   log?: (line: string) => void;
   legacyThreads?: LegacyThreadResolver;
   /** After every write to the assignment store, so a host that ticks only when work is due can tick again. */

@@ -23,6 +23,7 @@ import {
   recoverFailedComposerSend,
   rememberFailedComposerSend,
   restoredSendId,
+  restoredInboxTask,
   restoredRequestText,
   useComposerDraft,
   useComposerChannelMode,
@@ -93,6 +94,7 @@ import {
   type ComposerSlashCommand,
 } from "@/lib/composer-commands";
 import { useSlashSkills } from "@/lib/use-slash-skills";
+import { useInboxTasks } from "@/state/inbox-tasks";
 import { randomUuid } from "@/lib/random-uuid";
 
 const supportsAgents = (instances: InstanceInfo[], candidate?: Bot) =>
@@ -403,12 +405,13 @@ export function Composer({
     requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(learn.length, learn.length); });
   };
 
-  const pendingCount = (state.pendingQueued[threadId] ?? []).length;
   const queuedMessages = state.pendingQueued[threadId] ?? [];
+  const pendingCount = queuedMessages.length;
+  const steerableCount = queuedMessages.some((item) => item.inboxTask) ? 0 : pendingCount;
   const canSteerQueued = composerCanSteerQueuedMessages(
     busy,
     locked,
-    pendingCount,
+    steerableCount,
     blocking,
   );
   const [steering, setSteering] = useState(false);
@@ -418,7 +421,7 @@ export function Composer({
   };
   const queueHeadId = queuedMessages[0]?.queueId;
   const steerQueued = () => {
-    if (!queueHeadId) return;
+    if (!queueHeadId || !canSteerQueued) return;
     setSteering(true);
     const settle = () => setSteering(false);
     if (group && canSteer) {
@@ -508,7 +511,13 @@ export function Composer({
   const callShown = !simpleDock || (!hasContent && !stopInSlot);
   const slot = slotColors(bot?.color, Boolean(group));
   // A one-to-one bot at work: Enter does the chosen follow-up and Ctrl/⌘ with it the other one. Rooms keep their own queue.
-  const followUpFor = (alternate: boolean) => resolveFollowUp({ running: busy && !group && Boolean(bot), alternate, preferred: followUpDefault, canSteer }) ?? undefined;
+  const inboxTasks = useInboxTasks();
+  const tracksSend = !group && Boolean(bot) && !remoteClient && state.config?.inboxTasks === true && effectiveChannelMode === "chat";
+  const runningTask = tracksSend ? inboxTasks.tasks.find((task) => task.botId === bot?.id && task.threadId === threadId && task.status === "running") : undefined;
+  const followsUp = busy && !group && Boolean(bot);
+  const trackedChoices: FollowUp[] = ["queue", ...(canSteer && runningTask && inboxTasks.phase === "ready" ? ["steer" as const] : []), "restart"];
+  const restoringTaskSend = restoredInboxTask(draftId);
+  const followUpFor = (alternate: boolean) => tracksSend ? undefined : resolveFollowUp({ running: followsUp, alternate, preferred: followUpDefault, canSteer }) ?? undefined;
   const steersNow = group ? canSteer : followUpFor(false) === "steer";
   const sendNames = sendLabels({ simple: !advanced, busy, canSteer: steersNow, name: busyName, sendLabel });
   const retryFailedSend = (failed: FailedComposerSend) => {
@@ -532,13 +541,14 @@ export function Composer({
           threadId: failed.threadId, mentions: failed.mentions,
           channelMode: failed.channelMode,
           followUp: failed.followUp,
+          inboxTask: failed.inboxTask,
         });
       },
     };
     if (group) {
       dispatch({ type: "sendGroup", groupId: group.id, mode: failedMode, ...retry });
     } else if (bot) {
-      dispatch({ type: "send", botId: bot.id, mode: failedMode, followUp: failed.followUp, ...retry });
+      dispatch({ type: "send", botId: bot.id, mode: failedMode, followUp: failed.followUp, inboxTask: failed.inboxTask, ...retry });
     }
   };
   const send = (followUp: FollowUp | undefined = followUpFor(false)) => {
@@ -555,6 +565,14 @@ export function Composer({
     stopDictation();
     const body = restoredRequestText(draftId) ?? composed;
     const dataContext = dataContextFor(body, state.computerOpen ? state.dataView : null, !group && bot ? { botId: bot.id, threadId } : undefined);
+    const inboxTask = restoringTaskSend ?? (tracksSend && (followUp === undefined || followUp === "queue") ? true : undefined);
+    const sendFollowUp = inboxTask ? undefined : followUp;
+    const inboxSupplement = tracksSend && sendFollowUp === "steer";
+    const inboxSteer = inboxSupplement ? runningTask?.id : undefined;
+    if (inboxSupplement && !inboxSteer) {
+      dispatch({ type: "error", message: t("inbox.tasks.steerUnavailable") });
+      return;
+    }
     const sentDraft: ComposerDraftSnapshot = {
       draftId,
       revision: draftRevision(draftId),
@@ -565,7 +583,7 @@ export function Composer({
       reply: replyTo ?? null,
       replyToId: replyTo?.id,
       threadId,
-      channelMode: effectiveChannelMode, mentions: picks.ids(body), followUp,
+      channelMode: effectiveChannelMode, mentions: picks.ids(body), followUp: inboxSupplement ? undefined : sendFollowUp, inboxTask,
     };
     if (group) {
       dispatch({
@@ -584,10 +602,13 @@ export function Composer({
       const page = effectiveChannelMode === "goal" ? undefined : openPageFor(threadId);
       dispatch({
         type: "send", botId: bot.id, text: body, sendId: sentDraft.sendId, replyToId: replyTo?.id, threadId, dataContext, mode: effectiveChannelMode, mentions: sentDraft.mentions,
-        ...(points ? { pointed: points.pointed } : {}), ...(page ? { openPage: page } : {}), ...(followUp ? { followUp } : {}),
-        onError: () => { points?.restore(); restoreDraft(sentDraft); },
+        ...(points ? { pointed: points.pointed } : {}), ...(page ? { openPage: page } : {}), followUp: sendFollowUp, inboxTask, inboxSteer, inboxSupplement,
+        onError: () => {
+          points?.restore();
+          restoreDraft(inboxSupplement ? { ...sentDraft, sendId: randomUuid(), inboxTask: true } : sentDraft);
+        },
       });
-      directMessageSent(state.instances, bot.modelSelection?.instanceId, busy && followUp !== "steer");
+      directMessageSent(state.instances, bot.modelSelection?.instanceId, busy && sendFollowUp !== "steer");
     }
     setText("");
     setAttachments([]); picks.clear();
@@ -962,7 +983,7 @@ export function Composer({
         {hasContent && !locked && (
           <ComposerSendButton compact={simpleDock} waits={busy && !steersNow} label={sendNames.label} title={sendNames.title} look={slot.button}
             disabled={attachmentPending} onSend={(alternate) => send(followUpFor(alternate))} onChoose={send}
-            menu={followUpFor(false) && { choices: followUpChoices(followUpDefault, canSteer), name: busyName, sendKey: sendLabel, alternateKey: alternateSendLabel(sendKey) }} />
+            menu={followsUp && !restoringTaskSend ? { choices: tracksSend ? trackedChoices : followUpChoices(followUpDefault, canSteer), tracked: tracksSend, name: busyName, sendKey: sendLabel, alternateKey: alternateSendLabel(sendKey) } : undefined} />
           )}
           </div>
         </div>

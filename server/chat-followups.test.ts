@@ -2,12 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as journal from "./message-db.ts";
 import { cancelChannelMessage, drainChannelMessages, queuedChannelMessage, queueChannelMessage, restoreChannelMessages } from "./channel-queue.ts";
-import { cancelSteeredMessage, drainSteeredMessages, queuedSteerSnapshot, queueSteeredMessage, restoreSteeredMessages, type SteerStore } from "./steer-queue.ts";
+import { cancelSteeredMessage, drainSteeredMessages, holdSteeredQueue, queuedSteerSnapshot, queueSteeredMessage, restoreSteeredMessages, type SteerStore } from "./steer-queue.ts";
 import type { BotRecord, Message } from "./store.ts";
 
 afterEach(() => {
   vi.restoreAllMocks();
   journal.settleChatFollowups(journal.chatFollowups().map((row) => row.id), null);
+  journal.deleteThread("thread");
   restoreSteeredMessages();
   restoreChannelMessages();
 });
@@ -27,6 +28,35 @@ function storeFor(botId: string, threadId: string): SteerStore & { messages: Mes
 }
 
 describe("durable accepted follow-ups", () => {
+  it("dispatches same-thread inbox tasks separately and in order after reopening the database", async () => {
+    const first = queueSteeredMessage("bot", "thread", "First task", { inboxTask: true, sendId: "first", queuedAt: 100 });
+    const second = queueSteeredMessage("bot", "thread", "Second task", { inboxTask: true, sendId: "second", queuedAt: 101 });
+    journal.closeMessageDb();
+    restoreSteeredMessages();
+    const store = storeFor("bot", "thread");
+    const run = vi.fn();
+    drainSteeredMessages(store, run);
+    expect(store.messages.map((message) => [message.queueId, message.text])).toEqual([[first.id, "First task"]]);
+    expect(run.mock.calls[0]?.[6]).toMatchObject({ inboxTask: true });
+    expect(journal.chatFollowups().map(({ id, status }) => [id, status])).toEqual([[first.id, "dispatching"], [second.id, "pending"]]);
+    expect(journal.getInboxTask(first.id)?.status).toBe("queued");
+    await Promise.resolve();
+    drainSteeredMessages(store, run);
+    expect(store.messages.map((message) => [message.queueId, message.text])).toEqual([[first.id, "First task"], [second.id, "Second task"]]);
+    await Promise.resolve();
+  });
+
+  it("holds the queue in order when a legacy steer is requested while an inbox task is pending", () => {
+    const ordinary = queueSteeredMessage("bot", "thread", "Ordinary message");
+    const task = queueSteeredMessage("bot", "thread", "Independent task", { inboxTask: true, sendId: "independent" });
+    expect(holdSteeredQueue("bot", "thread", task.id)).toBeNull();
+    expect(holdSteeredQueue("bot", "thread", ordinary.id)).toBeNull();
+    expect(queuedSteerSnapshot(() => true).thread).toEqual([
+      { queueId: ordinary.id, text: "Ordinary message" },
+      { queueId: task.id, text: "Independent task", inboxTask: true },
+    ]);
+  });
+
   it("restores bot order, receipt, attachments, reply context, unattended provenance and who to bill", async () => {
     const text = 'inspect this\n\n<attached-image path="/fixture/picture.png" name="picture.png" />';
     const first = queueSteeredMessage("bot", "thread", text, {

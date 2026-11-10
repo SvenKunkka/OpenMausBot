@@ -37,6 +37,7 @@ import { HomeLine } from "@/components/HomeLine";
 import { useTeamChats } from "@/state/team-chats";
 import { needsYouVersion, useTeamPeopleLoader } from "@/state/team-people";
 import { inboxVersion, useInboxLoader, useInboxPanel, useInboxReady } from "@/state/inbox";
+import { useInboxTasks, useInboxTasksLoader } from "@/state/inbox-tasks";
 import { InboxPanel } from "@/components/inbox/InboxPanel";
 import { PlacesRail } from "@/components/PlacesRail";
 import { NewLocalFromMenu } from "@/components/PlaceAddSheet";
@@ -79,8 +80,10 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const needsYou = needsYouVersion(state.bots, state.groups, state.notifications);
   useTeamPeopleLoader(state.config, needsYou);
   useInboxLoader(`${inboxVersion(state.bots) ?? ""}|${needsYou}`);
+  useInboxTasksLoader(state.config?.inboxTasks === true && window.ogb?.remoteClient?.active !== true, state.connected);
   const inboxReady = useInboxReady();
-  const inboxShown = useInboxPanel().open && inboxReady;
+  const taskInbox = useInboxTasks();
+  const inboxShown = useInboxPanel().open && (inboxReady || taskInbox.enabled);
   // A Switch AI pick lands once its stopped turn's chat is idle, wherever the person is by then.
   useAiSwitchKeeper({ bots: state.bots, dispatch });
   const showThreads = useShowThreads();
@@ -237,13 +240,14 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   useEffect(() => {
     if (
       localVmWorkspaceBotId &&
-      (state.activeView !== "chat" || state.selectedId !== localVmWorkspaceBotId)
+      (state.activeView !== "chat" || state.selectedId !== localVmWorkspaceBotId || state.focusMessage?.archivedMessages)
     ) {
       setLocalVmWorkspaceBotId(null);
     }
-  }, [localVmWorkspaceBotId, state.activeView, state.selectedId]);
+  }, [localVmWorkspaceBotId, state.activeView, state.selectedId, state.focusMessage?.archivedMessages]);
 
   const openLocalVmWorkspace = (botId: string) => {
+    dispatch({ type: "clearInboxTaskFocus" });
     dispatch({ type: "toggleComputer", open: false });
     setLocalVmWorkspaceBotId(botId);
   };
